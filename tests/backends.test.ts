@@ -42,6 +42,17 @@ describe("MemoryBackend", () => {
     expect(await backend.get("id1")).toBeNull();
     expect(backend.size).toBe(0);
   });
+
+  it("refresh() extends the TTL (sliding window)", async () => {
+    const backend = new MemoryBackend();
+    await backend.set("id1", ["data"], 500);
+    vi.advanceTimersByTime(400); // almost expired
+    await backend.refresh("id1", 500); // reset the clock
+    vi.advanceTimersByTime(400); // would have expired without refresh
+    expect(await backend.get("id1")).toEqual(["data"]);
+    vi.advanceTimersByTime(200); // now past the refreshed TTL
+    expect(await backend.get("id1")).toBeNull();
+  });
 });
 
 // ─── RedisBackend ────────────────────────────────────────────────────────────
@@ -64,6 +75,10 @@ function makeRedisClient() {
     },
     async del(key: string) {
       store.delete(key);
+    },
+    async expire(key: string, seconds: number) {
+      const entry = store.get(key);
+      if (entry) entry.expiresAt = Date.now() + seconds * 1000;
     },
   };
 }
@@ -116,12 +131,23 @@ describe("RedisBackend", () => {
     expect(await backend.get("id1")).toBeNull();
   });
 
+  it("refresh() extends the TTL via EXPIRE", async () => {
+    const redis = makeRedisClient();
+    const backend = new RedisBackend(redis);
+    await backend.set("id1", ["data"], 500);
+    vi.advanceTimersByTime(400);
+    await backend.refresh("id1", 500); // reset
+    vi.advanceTimersByTime(400); // would have expired
+    expect(await backend.get("id1")).toEqual(["data"]);
+  });
+
   it("accepts a custom ioredis-compatible client", async () => {
     let setCalled = false;
     const mockRedis = {
       async get(_k: string) { return null; },
       async setex(_k: string, _s: number, _v: string) { setCalled = true; },
       async del(_k: string) {},
+      async expire(_k: string, _s: number) {},
     };
     const backend = new RedisBackend(mockRedis);
     await backend.set("id", ["chunk"], 5_000);

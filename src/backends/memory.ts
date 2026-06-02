@@ -34,6 +34,11 @@ export class MemoryBackend implements StoreBackend {
     this.store.delete(id);
   }
 
+  async refresh(id: string, ttlMs: number): Promise<void> {
+    const entry = this.store.get(id);
+    if (entry) entry.expiresAt = Date.now() + ttlMs;
+  }
+
   /** Visible for testing. */
   get size(): number {
     return this.store.size;

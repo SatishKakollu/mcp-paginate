@@ -19,6 +19,7 @@ interface RedisClient {
   get(key: string): Promise<string | null>;
   setex(key: string, seconds: number, value: string): Promise<unknown>;
   del(key: string): Promise<unknown>;
+  expire(key: string, seconds: number): Promise<unknown>;
 }
 
 export class RedisBackend implements StoreBackend {
@@ -49,5 +50,10 @@ export class RedisBackend implements StoreBackend {
 
   async delete(id: string): Promise<void> {
     await this.redis.del(this.prefix + id);
+  }
+
+  async refresh(id: string, ttlMs: number): Promise<void> {
+    const ttlSeconds = Math.max(1, Math.ceil(ttlMs / 1000));
+    await this.redis.expire(this.prefix + id, ttlSeconds);
   }
 }

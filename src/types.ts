@@ -81,6 +81,13 @@ export interface StoreBackend {
    * native TTL (Redis, DynamoDB) may leave this unimplemented.
    */
   delete?(id: string): Promise<void>;
+  /**
+   * Reset the TTL for an existing entry (sliding window).
+   * Called automatically after each successful page fetch so long-running
+   * LLM sessions don't expire mid-pagination.
+   * Optional — if not implemented, TTL is fixed from the initial store.
+   */
+  refresh?(id: string, ttlMs: number): Promise<void>;
 }
 
 /** @deprecated Internal shape used by MemoryBackend. Will be removed in v1.0. */

@@ -31,7 +31,8 @@ const server = new McpServer({
  * AFTER (one line): every tool below automatically paginates.
  */
 paginate(server, {
-  maxTokens: 1000, // low for demo — use 4000+ in production
+  maxTokens: 4000,
+  ttlMs: 10 * 60 * 1000, // 10 min sliding window — resets on every page fetch
 });
 
 // ─── Tool 1: large database query ───────────────────────────────────────────

@@ -124,4 +124,15 @@ describe("ChunkStore", () => {
     const unsignedCursor = encodeCursor({ id, index: 0 }); // no secret
     expect(await store.get(unsignedCursor)).toBeNull();
   });
+
+  it("sliding TTL — fetching a page resets the expiry", async () => {
+    const store = new ChunkStore(500); // 500ms TTL
+    const id = await store.save(["p1", "p2"]);
+    const cursor = store.createCursor(id, 0);
+    vi.advanceTimersByTime(400); // almost expired
+    await store.get(cursor);    // fetches p1, resets TTL
+    vi.advanceTimersByTime(400); // would have expired without refresh
+    const cursor2 = store.createCursor(id, 1);
+    expect(await store.get(cursor2)).not.toBeNull(); // p2 still alive
+  });
 });

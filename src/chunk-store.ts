@@ -44,8 +44,13 @@ export class ChunkStore {
     const isLast = payload.index >= chunks.length - 1;
     const nextCursor = isLast ? null : this.createCursor(payload.id, payload.index + 1);
 
-    // Free the entry as soon as all pages are served — don't wait for TTL.
-    if (isLast) await this.backend.delete?.(payload.id);
+    if (isLast) {
+      // Free immediately — no point waiting for TTL.
+      await this.backend.delete?.(payload.id);
+    } else {
+      // Sliding TTL: reset the clock so long LLM sessions don't expire mid-pagination.
+      await this.backend.refresh?.(payload.id, this.ttlMs);
+    }
 
     return { chunk, nextCursor, pageIndex: payload.index, totalPages: chunks.length };
   }
