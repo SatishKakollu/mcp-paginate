@@ -7,7 +7,7 @@ name = "mcp-pager"
 version = "0.5.0"
 description = "Token-aware response paging for MCP servers — chunks large tool responses and delivers them page by page with agent-readable metadata"
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
 requires-python = ">=3.10"
 keywords = ["mcp", "model-context-protocol", "pagination", "pager", "chunking", "token", "llm", "agent"]
 dependencies = [

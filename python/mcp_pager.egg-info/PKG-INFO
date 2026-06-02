@@ -2,7 +2,7 @@ Metadata-Version: 2.4
 Name: mcp-pager
 Version: 0.5.0
 Summary: Token-aware response paging for MCP servers — chunks large tool responses and delivers them page by page with agent-readable metadata
-License: MIT
+License-Expression: MIT
 Project-URL: Homepage, https://github.com/SatishKakollu/mcp-pager
 Project-URL: Repository, https://github.com/SatishKakollu/mcp-pager
 Keywords: mcp,model-context-protocol,pagination,pager,chunking,token,llm,agent
