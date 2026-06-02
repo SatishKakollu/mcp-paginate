@@ -1,8 +1,8 @@
 /**
- * mcp-paginate demo server
+ * mcp-pager demo server
  *
  * Shows three realistic tools that return large payloads.
- * Without mcp-paginate these would overflow context windows;
+ * Without mcp-pager these would overflow context windows;
  * with it the LLM pages through seamlessly.
  *
  * Run:
@@ -20,12 +20,12 @@ import { paginate } from "../src/index.js";
 // ─── Server setup ───────────────────────────────────────────────────────────
 
 const server = new McpServer({
-  name: "mcp-paginate-demo",
+  name: "mcp-pager-demo",
   version: "0.2.0",
 });
 
 /**
- * BEFORE mcp-paginate: the LLM receives a truncated response or an error
+ * BEFORE mcp-pager: the LLM receives a truncated response or an error
  * when tool output exceeds its context window.
  *
  * AFTER (one line): every tool below automatically paginates.

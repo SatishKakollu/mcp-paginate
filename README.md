@@ -1,11 +1,11 @@
-# mcp-paginate
+# mcp-pager
 
 Token-aware response management for [MCP](https://modelcontextprotocol.io) servers.
 
-Your tools return thousands of records. LLMs have token limits. **mcp-paginate sits between them** — it intercepts oversized tool responses, chunks them by token count, and delivers each page with agent-readable metadata so the LLM knows exactly what to fetch next. One line of code. No changes to your existing server.
+Your tools return thousands of records. LLMs have token limits. **mcp-pager sits between them** — it intercepts oversized tool responses, chunks them by token count, and delivers each page with agent-readable metadata so the LLM knows exactly what to fetch next. One line of code. No changes to your existing server.
 
 ```ts
-import { paginate } from "mcp-paginate";
+import { paginate } from "mcp-pager";
 
 const server = new McpServer({ name: "my-server", version: "1.0.0" });
 paginate(server, { maxTokens: 4000 });
@@ -62,7 +62,7 @@ get_next_page(cursor) → read from store (NO backend call) → return next chun
 ```
 list_records() called once  →  backend returns 500 records
                                         ↓
-                             mcp-paginate splits into 22 chunks
+                             mcp-pager splits into 22 chunks
                              stores all chunks in ChunkStore
                                         ↓
                              page 1 returned to LLM + cursor
@@ -70,7 +70,7 @@ list_records() called once  →  backend returns 500 records
 get_next_page() × 21  →  memory reads only, zero backend calls
 ```
 
-This is the opposite of traditional API pagination (like `?page=2&per_page=100`) where every page is a new database or network request. mcp-paginate fetches everything once and serves it in pieces — your backend sees a single request regardless of how many pages the LLM retrieves.
+This is the opposite of traditional API pagination (like `?page=2&per_page=100`) where every page is a new database or network request. mcp-pager fetches everything once and serves it in pieces — your backend sees a single request regardless of how many pages the LLM retrieves.
 
 **The tradeoff:** the full response is held in memory until the session completes (via `delete()` on last page) or TTL expires. For large datasets this matters — see [Limitations](#limitations) below.
 
@@ -79,7 +79,7 @@ This is the opposite of traditional API pagination (like `?page=2&per_page=100`)
 ## Installation
 
 ```bash
-npm install mcp-paginate
+npm install mcp-pager
 ```
 
 **Peer requirement:** `@modelcontextprotocol/sdk` ≥ 1.0.0 (already in your project).
@@ -123,7 +123,7 @@ Returns the same `McpServer` instance (mutates in-place for composability).
 Works out of the box. Chunks live in process memory with TTL eviction. **Not suitable for multi-process or serverless deployments** — each process has its own isolated store.
 
 ```ts
-import { paginate } from "mcp-paginate";
+import { paginate } from "mcp-pager";
 
 paginate(server); // uses MemoryBackend by default
 ```
@@ -138,8 +138,8 @@ npm install ioredis
 
 ```ts
 import Redis from "ioredis";
-import { paginate } from "mcp-paginate";
-import { RedisBackend } from "mcp-paginate/redis";
+import { paginate } from "mcp-pager";
+import { RedisBackend } from "mcp-pager/redis";
 
 const redis = new Redis(process.env.REDIS_URL);
 
@@ -149,7 +149,7 @@ paginate(server, {
 });
 ```
 
-`RedisBackend` accepts an optional second argument to namespace keys (default: `"mcp-paginate:"`):
+`RedisBackend` accepts an optional second argument to namespace keys (default: `"mcp-pager:"`):
 
 ```ts
 new RedisBackend(redis, "myapp:pages:")
@@ -165,7 +165,7 @@ The three methods:
 - `delete(id)` *(optional)* — called automatically when the last page of a session is served, so you can free the entry immediately rather than waiting for TTL expiry
 
 ```ts
-import type { StoreBackend } from "mcp-paginate";
+import type { StoreBackend } from "mcp-pager";
 
 class DynamoBackend implements StoreBackend {
   async get(id: string): Promise<string[] | null> {
@@ -220,7 +220,7 @@ npm install @dqbd/tiktoken
 
 ```ts
 import { get_encoding } from "@dqbd/tiktoken";
-import { paginate } from "mcp-paginate";
+import { paginate } from "mcp-pager";
 
 const enc = get_encoding("cl100k_base"); // GPT-4 / Claude approximation
 
@@ -236,7 +236,7 @@ For Claude deployments where exact Claude tokenization matters:
 
 ```ts
 import Anthropic from "@anthropic-ai/sdk";
-import { paginate } from "mcp-paginate";
+import { paginate } from "mcp-pager";
 
 const anthropic = new Anthropic();
 
@@ -266,7 +266,7 @@ paginate(server, {
 
 ### `get_next_page` tool
 
-`mcp-paginate` injects this tool automatically. The LLM calls it when a response contains a cursor:
+`mcp-pager` injects this tool automatically. The LLM calls it when a response contains a cursor:
 
 **Input schema:**
 ```json
@@ -294,7 +294,7 @@ Cursors are base64url-encoded opaque pointers — they contain no user data.
 ```ts
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { paginate } from "mcp-paginate";
+import { paginate } from "mcp-pager";
 import { z } from "zod";
 
 const server = new McpServer({ name: "my-server", version: "1.0.0" });
@@ -314,8 +314,8 @@ await server.connect(transport);
 
 ```ts
 import Redis from "ioredis";
-import { paginate } from "mcp-paginate";
-import { RedisBackend } from "mcp-paginate/redis";
+import { paginate } from "mcp-pager";
+import { RedisBackend } from "mcp-pager/redis";
 
 const redis = new Redis(process.env.REDIS_URL);
 
@@ -350,7 +350,7 @@ Connect any MCP client and call `list_records`, `list_files`, or `fetch_logs`. E
 
 ## LLM prompting guide
 
-mcp-paginate injects `get_next_page` as a real MCP tool, so well-prompted LLMs follow it automatically. In practice, models are inconsistent at multi-turn cursor following without explicit guidance. Use these templates.
+mcp-pager injects `get_next_page` as a real MCP tool, so well-prompted LLMs follow it automatically. In practice, models are inconsistent at multi-turn cursor following without explicit guidance. Use these templates.
 
 ### System prompt (add once to your MCP server or host config)
 
@@ -465,18 +465,18 @@ paginate(server, {
     switch (event.type) {
       case "chunked":
         console.log(
-          `[mcp-paginate] ${event.toolName} → ${event.totalChunks} pages` +
+          `[mcp-pager] ${event.toolName} → ${event.totalChunks} pages` +
           ` (${event.totalTokens} tokens)`
         );
         break;
       case "page_fetched":
         console.log(
-          `[mcp-paginate] page ${event.pageIndex + 1}/${event.totalPages}` +
+          `[mcp-pager] page ${event.pageIndex + 1}/${event.totalPages}` +
           ` hasMore=${event.hasMore}`
         );
         break;
       case "cursor_expired":
-        console.warn("[mcp-paginate] cursor_expired — client sent stale cursor");
+        console.warn("[mcp-pager] cursor_expired — client sent stale cursor");
         break;
     }
   },
@@ -515,7 +515,7 @@ paginate(server, {
 
 ### Fetch-all-first — not designed for very large datasets
 
-mcp-paginate fetches the **complete response from your tool in one shot**, then chunks it. For small-to-moderate payloads (thousands of records, a few MB) this is fine. For very large datasets it has consequences:
+mcp-pager fetches the **complete response from your tool in one shot**, then chunks it. For small-to-moderate payloads (thousands of records, a few MB) this is fine. For very large datasets it has consequences:
 
 | Dataset size | Behaviour |
 |-------------|-----------|
@@ -538,16 +538,16 @@ server.tool(
 );
 ```
 
-Use mcp-paginate as a **retrofit for tools you don't control** or tools that weren't designed with pagination in mind — not as a substitute for proper DB-level pagination when you own the data layer.
+Use mcp-pager as a **retrofit for tools you don't control** or tools that weren't designed with pagination in mind — not as a substitute for proper DB-level pagination when you own the data layer.
 
 ---
 
 ### When a tool already describes its own pagination
 
-If a tool's description says it supports pagination (e.g. "accepts a cursor parameter, returns nextCursor in the response"), mcp-paginate still works — but the behaviour depends on response size:
+If a tool's description says it supports pagination (e.g. "accepts a cursor parameter, returns nextCursor in the response"), mcp-pager still works — but the behaviour depends on response size:
 
 **Case 1 — Tool returns a small page (under `maxTokens`):**
-mcp-paginate passes it through unchanged. The LLM reads the tool's own `nextCursor` from the JSON response and calls the tool again directly. No conflict — mcp-paginate is invisible.
+mcp-pager passes it through unchanged. The LLM reads the tool's own `nextCursor` from the JSON response and calls the tool again directly. No conflict — mcp-pager is invisible.
 
 ```
 LLM calls list_records(cursor=null)  →  small page returned as-is
@@ -555,7 +555,7 @@ LLM reads nextCursor from JSON       →  calls list_records(cursor="abc") direc
 ```
 
 **Case 2 — Tool returns a large page (over `maxTokens`):**
-mcp-paginate will chunk the oversized response and inject its own cursor. The LLM now sees *two* pagination signals — the tool's native `nextCursor` inside the chunked JSON and mcp-paginate's `get_next_page` cursor. This causes confusion.
+mcp-pager will chunk the oversized response and inject its own cursor. The LLM now sees *two* pagination signals — the tool's native `nextCursor` inside the chunked JSON and mcp-pager's `get_next_page` cursor. This causes confusion.
 
 **Recommendation:** for tools that already handle their own pagination and return predictably-sized pages, exclude them from wrapping or raise `maxTokens` high enough that their pages never trigger chunking:
 

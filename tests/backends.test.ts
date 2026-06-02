@@ -118,7 +118,7 @@ describe("RedisBackend", () => {
 
   it("returns null for malformed JSON", async () => {
     const redis = makeRedisClient();
-    redis.store.set("mcp-paginate:bad", { value: "not-json{{{", expiresAt: Date.now() + 60_000 });
+    redis.store.set("mcp-pager:bad", { value: "not-json{{{", expiresAt: Date.now() + 60_000 });
     const backend = new RedisBackend(redis);
     expect(await backend.get("bad")).toBeNull();
   });

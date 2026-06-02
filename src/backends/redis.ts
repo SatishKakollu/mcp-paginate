@@ -1,13 +1,13 @@
 /**
- * Redis-backed storage for mcp-paginate.
+ * Redis-backed storage for mcp-pager.
  *
  * Requires `ioredis` as a peer dependency:
  *   npm install ioredis
  *
  * Usage:
  *   import Redis from "ioredis";
- *   import { paginate } from "mcp-paginate";
- *   import { RedisBackend } from "mcp-paginate/redis";
+ *   import { paginate } from "mcp-pager";
+ *   import { RedisBackend } from "mcp-pager/redis";
  *
  *   const redis = new Redis(process.env.REDIS_URL);
  *   paginate(server, { store: new RedisBackend(redis) });
@@ -27,8 +27,8 @@ export class RedisBackend implements StoreBackend {
 
   constructor(
     private readonly redis: RedisClient,
-    /** Key prefix to namespace paginate entries. Default: "mcp-paginate:" */
-    prefix = "mcp-paginate:"
+    /** Key prefix to namespace paginate entries. Default: "mcp-pager:" */
+    prefix = "mcp-pager:"
   ) {
     this.prefix = prefix;
   }

@@ -1,8 +1,8 @@
 {
-  "name": "mcp-paginate",
+  "name": "mcp-pager",
   "version": "0.4.1",
-  "description": "Zero-config pagination middleware for MCP servers",
-  "keywords": ["mcp", "model-context-protocol", "pagination", "middleware"],
+  "description": "Token-aware response paging for MCP servers — chunks large tool responses and delivers them page by page with agent-readable metadata",
+  "keywords": ["mcp", "model-context-protocol", "pagination", "pager", "chunking", "token", "context-window", "middleware", "llm", "agent"],
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.cjs",
