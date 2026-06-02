@@ -13,8 +13,12 @@ function tokenText(tokens: number) {
 function extractCursor(content: Array<{ type: string; text?: string }>): string | null {
   const last = content[content.length - 1];
   if (last?.type !== "text" || !last.text) return null;
-  const match = last.text.match(/cursor:\s*`([^`]+)`/);
-  return match?.[1] ?? null;
+  // New JSON format: "nextCursor": "..."
+  const jsonMatch = last.text.match(/"nextCursor":\s*"([^"]+)"/);
+  if (jsonMatch) return jsonMatch[1] ?? null;
+  // Legacy markdown format: cursor: `...`
+  const mdMatch = last.text.match(/cursor:\s*`([^`]+)`/);
+  return mdMatch?.[1] ?? null;
 }
 
 async function makeConnectedPair(options: Parameters<typeof paginate>[1] = {}) {

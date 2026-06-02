@@ -1,8 +1,8 @@
 # mcp-paginate
 
-Zero-config pagination middleware for [MCP](https://modelcontextprotocol.io) servers.
+Token-aware response management for [MCP](https://modelcontextprotocol.io) servers.
 
-Wrap any existing MCP server with one call. Tool responses that exceed your token limit are automatically chunked and returned with cursor-based pagination — no changes required to your underlying server.
+Your tools return thousands of records. LLMs have token limits. **mcp-paginate sits between them** — it intercepts oversized tool responses, chunks them by token count, and delivers each page with agent-readable metadata so the LLM knows exactly what to fetch next. One line of code. No changes to your existing server.
 
 ```ts
 import { paginate } from "mcp-paginate";
@@ -10,32 +10,47 @@ import { paginate } from "mcp-paginate";
 const server = new McpServer({ name: "my-server", version: "1.0.0" });
 paginate(server, { maxTokens: 4000 });
 
-// Register tools as normal — pagination is applied transparently.
+// Every tool you register is now token-safe — no other changes needed.
 server.tool("search", { query: z.string() }, async ({ query }) => {
-  const results = await db.search(query); // could be huge
+  const results = await db.search(query); // could return thousands of records
   return { content: [{ type: "text", text: JSON.stringify(results) }] };
 });
 ```
+
+When a response is too large, the LLM receives an agent-readable metadata block instead of a truncated wall of text:
+
+```json
+{
+  "hasMore": true,
+  "pageIndex": 0,
+  "totalPages": 22,
+  "remainingPages": 21,
+  "nextCursor": "eyJpZCI6Ijkx...",
+  "instruction": "Call `get_next_page` with nextCursor to get the next page. Repeat until hasMore is false."
+}
+```
+
+The LLM follows the `instruction` field, calling `get_next_page` until `hasMore` is `false` — no ambiguity, no guessing.
 
 ---
 
 ## How it works
 
-1. `paginate()` wraps `server.tool` via a Proxy so every tool you register gets a paginating handler automatically.
+1. `paginate()` wraps `server.tool` so every tool you register gets token-aware handling automatically.
 2. When a tool returns a response, its token count is estimated.
-3. **Under the limit** → response is returned as-is; no overhead.
-4. **Over the limit** → the response is split into chunks, stored with a TTL, and the first chunk is returned along with a `nextCursor`.
-5. The LLM calls the injected `get_next_page` tool with the cursor to retrieve subsequent pages.
-6. The final page has no cursor — the LLM knows it has all the data.
+3. **Under the limit** → response is returned as-is; zero overhead.
+4. **Over the limit** → split into chunks, stored with TTL, first chunk returned with a structured metadata block.
+5. The LLM reads the metadata, calls `get_next_page` with `nextCursor` for each subsequent page.
+6. The final page has `hasMore: false` — the LLM knows definitively that all data has been retrieved.
 
 ```
 Tool call  →  PaginatingServer  →  UnderlyingServer
                     │
               token count ≤ limit?
               ├─ yes → return as-is
-              └─ no  → chunk → store → return page 1 + cursor
+              └─ no  → chunk → store → return page 1 + metadata
 
-get_next_page(cursor) → read from store (NO backend call) → return next chunk
+get_next_page(cursor) → read from store (NO backend call) → return next chunk + metadata
 ```
 
 ---
@@ -362,20 +377,31 @@ then give me the complete count and a department breakdown.
 Turn 1 — tool response (page 1 of 4):
   [... first 1000 tokens of data ...]
   ---
-  More results available. Call `get_next_page` with cursor: `eyJpZ...`
+  ```json
+  { "hasMore": true, "pageIndex": 0, "totalPages": 4, "remainingPages": 3,
+    "nextCursor": "eyJpZ...", "instruction": "Call `get_next_page` with nextCursor..." }
+  ```
 
 Turn 2 — LLM calls get_next_page(cursor="eyJpZ...")
   [... next 1000 tokens ...]
-  More results available. Call `get_next_page` with cursor: `eyJpZ...2`
+  ```json
+  { "hasMore": true, "pageIndex": 1, "totalPages": 4, "remainingPages": 2, ... }
+  ```
 
 Turn 3 — LLM calls get_next_page(cursor="eyJpZ...2")
   [... next 1000 tokens ...]
-  More results available. Call `get_next_page` with cursor: `eyJpZ...3`
+  ```json
+  { "hasMore": true, "pageIndex": 2, "totalPages": 4, "remainingPages": 1, ... }
+  ```
 
 Turn 4 — LLM calls get_next_page(cursor="eyJpZ...3")
-  [... final tokens — no cursor]
+  [... final tokens ...]
+  ```json
+  { "hasMore": false, "pageIndex": 3, "totalPages": 4, "remainingPages": 0,
+    "instruction": "All pages have been retrieved." }
+  ```
 
-LLM now has all data and answers the user.
+LLM sees hasMore=false → answers the user with complete data.
 ```
 
 ### Model-specific notes

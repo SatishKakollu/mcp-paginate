@@ -23,15 +23,41 @@ describe("paginate()", () => {
     expect(result.content[0].text).toBe("hello");
   });
 
-  it("chunks oversized responses and returns a nextCursor", async () => {
+  it("chunks oversized responses and returns agent-aware metadata", async () => {
     const server = makeServer();
     paginate(server, { maxTokens: 50 });
     server.tool("big", {}, async () => ({
       content: [{ type: "text" as const, text: makeLargeText(200) }],
     }));
     const result = await getHandler(server, "big")({});
-    expect(result.content.length).toBeGreaterThanOrEqual(2);
-    expect(result.content[result.content.length - 1].text).toContain("get_next_page");
+    expect(result.content.length).toBe(2);
+    const meta = parseMetaBlock(result.content[1].text);
+    expect(meta.hasMore).toBe(true);
+    expect(meta.nextCursor).toBeTruthy();
+    expect(meta.pageIndex).toBe(0);
+    expect(meta.totalPages).toBeGreaterThan(1);
+    expect(meta.remainingPages).toBe(meta.totalPages - 1);
+    expect(meta.instruction).toContain("get_next_page");
+  });
+
+  it("last page has hasMore=false and completion instruction", async () => {
+    const server = makeServer();
+    paginate(server, { maxTokens: 50 });
+    server.tool("big", {}, async () => ({
+      content: [{ type: "text" as const, text: makeLargeText(200) }],
+    }));
+    let result = await getHandler(server, "big")({});
+    let iterations = 0;
+    while (true) {
+      const meta = parseMetaBlock(result.content[result.content.length - 1].text);
+      if (!meta.hasMore) {
+        expect(meta.remainingPages).toBe(0);
+        expect(meta.instruction).toContain("All pages");
+        break;
+      }
+      result = await getHandler(server, "get_next_page")({ cursor: meta.nextCursor });
+      if (++iterations > 50) throw new Error("Infinite loop");
+    }
   });
 
   it("get_next_page advances through all pages", async () => {
@@ -43,10 +69,9 @@ describe("paginate()", () => {
     let result = await getHandler(server, "big")({});
     let pages = 1;
     while (true) {
-      const hint = result.content[result.content.length - 1]?.text as string;
-      const match = hint?.match(/cursor:\s*`([^`]+)`/);
-      if (!match) break;
-      result = await getHandler(server, "get_next_page")({ cursor: match[1] });
+      const meta = parseMetaBlock(result.content[result.content.length - 1].text);
+      if (!meta.hasMore) break;
+      result = await getHandler(server, "get_next_page")({ cursor: meta.nextCursor });
       pages++;
       if (pages > 50) throw new Error("Infinite loop");
     }
@@ -100,9 +125,8 @@ describe("onPaginate events", () => {
       content: [{ type: "text" as const, text: makeLargeText(200) }],
     }));
     const first = await getHandler(server, "big")({});
-    const hint = first.content[first.content.length - 1]?.text as string;
-    const cursor = hint.match(/cursor:\s*`([^`]+)`/)?.[1]!;
-    await getHandler(server, "get_next_page")({ cursor });
+    const { nextCursor } = parseMetaBlock(first.content[first.content.length - 1].text);
+    await getHandler(server, "get_next_page")({ cursor: nextCursor });
     const fetched = events.find((e) => e.type === "page_fetched");
     expect(fetched).toBeDefined();
     expect(fetched?.type === "page_fetched" && fetched.pageIndex).toBe(1);
@@ -142,10 +166,9 @@ describe("signingSecret", () => {
     let result = await getHandler(server, "big")({});
     let pages = 1;
     while (true) {
-      const hint = result.content[result.content.length - 1]?.text as string;
-      const match = hint?.match(/cursor:\s*`([^`]+)`/);
-      if (!match) break;
-      result = await getHandler(server, "get_next_page")({ cursor: match[1] });
+      const meta = parseMetaBlock(result.content[result.content.length - 1].text);
+      if (!meta.hasMore) break;
+      result = await getHandler(server, "get_next_page")({ cursor: meta.nextCursor });
       pages++;
       if (pages > 50) throw new Error("Infinite loop");
     }
@@ -159,9 +182,8 @@ describe("signingSecret", () => {
       content: [{ type: "text" as const, text: makeLargeText(200) }],
     }));
     const first = await getHandler(server, "big")({});
-    const hint = first.content[first.content.length - 1]?.text as string;
-    const cursor = hint.match(/cursor:\s*`([^`]+)`/)?.[1]!;
-    const tampered = cursor.slice(0, -4) + "XXXX"; // corrupt last 4 chars
+    const { nextCursor } = parseMetaBlock(first.content[first.content.length - 1].text);
+    const tampered = nextCursor.slice(0, -4) + "XXXX";
     const result = await getHandler(server, "get_next_page")({ cursor: tampered });
     expect(result.isError).toBe(true);
   });
@@ -182,4 +204,19 @@ function getHandler(server: McpServer, name: string) {
 function getToolNames(server: McpServer): string[] {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return Object.keys((server as any)._registeredTools as ToolRegistry);
+}
+
+interface MetaBlock {
+  hasMore: boolean;
+  pageIndex: number;
+  totalPages: number;
+  remainingPages: number;
+  nextCursor: string;
+  instruction: string;
+}
+
+function parseMetaBlock(text: string): MetaBlock {
+  const match = text.match(/```json\s*([\s\S]*?)\s*```/);
+  if (!match) throw new Error(`No JSON meta block found in: ${text}`);
+  return JSON.parse(match[1]!) as MetaBlock;
 }

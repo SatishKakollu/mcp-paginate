@@ -48,7 +48,7 @@ export function paginate(server: McpServer, options: PaginateOptions = {}): McpS
       }
       const { chunk, nextCursor, pageIndex, totalPages } = result;
       emit(onPaginate, { type: "page_fetched", pageIndex, totalPages, hasMore: nextCursor !== null });
-      return buildPageResponse(chunk, nextCursor, pageToolName);
+      return buildPageResponse(chunk, nextCursor, pageToolName, pageIndex, totalPages);
     }
   );
 
@@ -111,20 +111,42 @@ async function maybePaginate(
 
   emit(onPaginate, { type: "chunked", toolName, totalTokens, totalChunks: chunks.length });
 
+  const totalPages = chunks.length;
   const firstChunk = chunks[0] ?? "";
-  const nextCursor = chunks.length > 1 ? store.createCursor(id, 1) : null;
-  return buildPageResponse(firstChunk, nextCursor, pageToolName);
+  const nextCursor = totalPages > 1 ? store.createCursor(id, 1) : null;
+  return buildPageResponse(firstChunk, nextCursor, pageToolName, 0, totalPages);
 }
 
-function buildPageResponse(chunk: string, nextCursor: string | null, pageToolName: string) {
-  const parts: Array<{ type: "text"; text: string }> = [{ type: "text", text: chunk }];
-  if (nextCursor) {
-    parts.push({
-      type: "text",
-      text: `\n---\n_More results available. Call \`${pageToolName}\` with cursor: \`${nextCursor}\`_`,
-    });
-  }
-  return { content: parts };
+function buildPageResponse(
+  chunk: string,
+  nextCursor: string | null,
+  pageToolName: string,
+  pageIndex: number,
+  totalPages: number
+) {
+  const meta = nextCursor
+    ? {
+        hasMore: true,
+        pageIndex,
+        totalPages,
+        remainingPages: totalPages - pageIndex - 1,
+        nextCursor,
+        instruction: `Call \`${pageToolName}\` with nextCursor to get the next page. Repeat until hasMore is false.`,
+      }
+    : {
+        hasMore: false,
+        pageIndex,
+        totalPages,
+        remainingPages: 0,
+        instruction: "All pages have been retrieved.",
+      };
+
+  return {
+    content: [
+      { type: "text" as const, text: chunk },
+      { type: "text" as const, text: `\n---\n\`\`\`json\n${JSON.stringify(meta, null, 2)}\n\`\`\`` },
+    ],
+  };
 }
 
 function splitIntoChunks(
