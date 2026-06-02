@@ -176,11 +176,9 @@ function paginate(server: McpServer, options?: PaginateOptions): McpServer;
 
 ### 🔴 High Value — Drives adoption
 - **Community announcement** — post to r/mcp, MCP Discord, Hacker News (Show HN).
-  Package solves a real pain point and v0.2.2 is solid enough to announce.
-  Draft a post covering: what it does, one-line install, the "1 backend call" strength, Redis backend for prod.
-- **GitHub repo topics** — add topics to `github.com/SatishKakollu/mcp-paginate`:
-  `mcp`, `model-context-protocol`, `pagination`, `typescript`, `middleware`, `llm`
-  Makes the repo discoverable in GitHub searches.
+  Lead with: one-line install, agent-aware JSON metadata, sliding TTL, Redis backend.
+- **GitHub repo topics** ⏳ — add to `github.com/SatishKakollu/mcp-pager`:
+  `mcp`, `model-context-protocol`, `pagination`, `pager`, `typescript`, `middleware`, `llm`, `agent`, `context-window`, `chunking`
 
 ### 🟠 Python port — after TS API is stable
 - **Trigger:** no breaking API changes for 2–3 weeks after v0.2.2
@@ -193,7 +191,10 @@ function paginate(server: McpServer, options?: PaginateOptions): McpServer;
   - Redis backend via `redis-py` instead of `ioredis`
 - **Not a straight copy** — needs its own design pass for Pythonic API
 
-### 🟡 Multi-tenant / signed cursors — only if use cases emerge
+### ✅ Multi-tenant / signed cursors — Done in v0.3.0
+- HMAC-sha256 signing via `signingSecret` option, `timingSafeEqual` comparison
+
+### 🟡 Multi-tenant advanced — only if use cases emerge
 - Current cursors are base64url `{id, index}` — opaque, no user data, IDs are `crypto.randomUUID()` (unguessable)
 - **Gap:** no cryptographic integrity check — a client can craft a cursor pointing to an arbitrary `{id, index}`
 - If the store entry doesn't exist the request fails safely (no data leak), but there's no tamper-proof guarantee
@@ -217,6 +218,31 @@ function paginate(server: McpServer, options?: PaginateOptions): McpServer;
 - npm: https://www.npmjs.com/package/mcp-paginate
 - GitHub: https://github.com/skakollu/mcp-paginate
 - All pending publish/repo items resolved.
+
+### 2026-06-02 — v0.3.0: LLM prompting guide + observability + HMAC signing
+- Added `onPaginate` callback — fires `chunked`, `page_fetched`, `cursor_expired` events
+- Added `signingSecret` option — HMAC-sha256 cursor signing with `timingSafeEqual`
+- Added LLM prompting guide to README (system prompt, per-model notes, turn-by-turn example)
+- 51 tests passing
+
+### 2026-06-02 — v0.4.0: Agent-aware JSON metadata + README repositioning
+- Replaced markdown cursor hint with structured JSON block: `hasMore`, `pageIndex`, `totalPages`, `remainingPages`, `nextCursor`, `instruction`
+- Last page includes `hasMore: false` + completion confirmation
+- README rewritten to lead with "token-aware response management" not "pagination middleware"
+- 52 tests passing
+
+### 2026-06-02 — v0.4.1: Sliding TTL + demo server fix
+- Root cause: fixed TTL expired mid-session (reproduced: cursor expired at page 25 of 1000 log lines)
+- Fix: `backend.refresh?.(id, ttlMs)` called on every non-last page fetch
+- Added `refresh()` to `StoreBackend` interface, `MemoryBackend`, `RedisBackend`
+- Demo server: `maxTokens` 1000→4000, `ttlMs` 5min→10min sliding window
+- 55 tests passing
+
+### 2026-06-02 — Renamed mcp-paginate → mcp-pager
+- npm: https://www.npmjs.com/package/mcp-pager
+- GitHub: https://github.com/SatishKakollu/mcp-pager
+- mcp-paginate deprecated on npm pointing to mcp-pager
+- All source, README, examples, tests updated
 
 ---
 
