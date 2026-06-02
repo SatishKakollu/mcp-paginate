@@ -35,8 +35,29 @@ Tool call  →  PaginatingServer  →  UnderlyingServer
               ├─ yes → return as-is
               └─ no  → chunk → store → return page 1 + cursor
 
-get_next_page(cursor) → return next chunk (+ cursor if more remain)
+get_next_page(cursor) → read from store (NO backend call) → return next chunk
 ```
+
+---
+
+## Key design strength: one backend call, always
+
+**No matter how many pages the LLM fetches, your backend is called exactly once.**
+
+```
+list_records() called once  →  backend returns 500 records
+                                        ↓
+                             mcp-paginate splits into 22 chunks
+                             stores all chunks in ChunkStore
+                                        ↓
+                             page 1 returned to LLM + cursor
+
+get_next_page() × 21  →  memory reads only, zero backend calls
+```
+
+This is the opposite of traditional API pagination (like `?page=2&per_page=100`) where every page is a new database or network request. mcp-paginate fetches everything once and serves it in pieces — your backend sees a single request regardless of how many pages the LLM retrieves.
+
+**The tradeoff:** the full response is held in memory until the session completes (via `delete()` on last page) or TTL expires. For large datasets this matters — see [Limitations](#limitations) below.
 
 ---
 
@@ -312,8 +333,66 @@ Connect any MCP client and call `list_records`, `list_files`, or `fetch_logs`. E
 
 ## Limitations
 
-- **Approximate token counting.** The default `chars / 4` heuristic is accurate to ±15%. Use tiktoken or the Anthropic API for exact counts.
-- **Single-server scope.** Each `paginate()` call has its own store. Use a shared Redis backend for multi-process deployments.
+### Fetch-all-first — not designed for very large datasets
+
+mcp-paginate fetches the **complete response from your tool in one shot**, then chunks it. For small-to-moderate payloads (thousands of records, a few MB) this is fine. For very large datasets it has consequences:
+
+| Dataset size | Behaviour |
+|-------------|-----------|
+| < ~5 000 records | Works well — fast fetch, low memory |
+| 5 000 – 50 000 records | Works but first call is slow; memory holds entire result |
+| 50 000+ records | Not recommended — use tool-level pagination instead |
+
+**The right fix for large datasets** is to add `limit` and `cursor` parameters directly to the tool so the backend paginates at the source:
+
+```ts
+server.tool(
+  "list_records",
+  { limit: z.number().default(100), cursor: z.string().optional() },
+  async ({ limit, cursor }) => {
+    const offset = cursor ? parseInt(atob(cursor)) : 0;
+    const rows = await db.query("SELECT * FROM t LIMIT ? OFFSET ?", [limit, offset]);
+    const nextCursor = rows.length === limit ? btoa(String(offset + limit)) : null;
+    return { content: [{ type: "text", text: JSON.stringify({ rows, nextCursor }) }] };
+  }
+);
+```
+
+Use mcp-paginate as a **retrofit for tools you don't control** or tools that weren't designed with pagination in mind — not as a substitute for proper DB-level pagination when you own the data layer.
+
+---
+
+### When a tool already describes its own pagination
+
+If a tool's description says it supports pagination (e.g. "accepts a cursor parameter, returns nextCursor in the response"), mcp-paginate still works — but the behaviour depends on response size:
+
+**Case 1 — Tool returns a small page (under `maxTokens`):**
+mcp-paginate passes it through unchanged. The LLM reads the tool's own `nextCursor` from the JSON response and calls the tool again directly. No conflict — mcp-paginate is invisible.
+
+```
+LLM calls list_records(cursor=null)  →  small page returned as-is
+LLM reads nextCursor from JSON       →  calls list_records(cursor="abc") directly
+```
+
+**Case 2 — Tool returns a large page (over `maxTokens`):**
+mcp-paginate will chunk the oversized response and inject its own cursor. The LLM now sees *two* pagination signals — the tool's native `nextCursor` inside the chunked JSON and mcp-paginate's `get_next_page` cursor. This causes confusion.
+
+**Recommendation:** for tools that already handle their own pagination and return predictably-sized pages, exclude them from wrapping or raise `maxTokens` high enough that their pages never trigger chunking:
+
+```ts
+// Wrap the server but set a high limit so natively-paginated tools pass through
+paginate(server, { maxTokens: 50_000 });
+
+// Or skip paginate() entirely for servers where all tools are already paginated
+```
+
+---
+
+### Other limitations
+
+- **Approximate token counting.** The default `chars / 4` heuristic is accurate to ±15%. Use tiktoken or the Anthropic API for exact counts. Set `maxTokens` to ~80% of your real budget to absorb variance.
+- **Single-server scope.** Each `paginate()` call has its own isolated store. Use a shared Redis backend for multi-process or serverless deployments.
+- **Memory bounded by response size.** The full tool response is held in the store until the last page is served (auto-deleted) or TTL expires. Monitor memory if tools can return very large payloads.
 
 ---
 
