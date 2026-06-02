@@ -1,8 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { ChunkStore, encodeCursor } from "./chunk-store.js";
+import { ChunkStore } from "./chunk-store.js";
 import { defaultTokenCounter, estimateContentTokens } from "./tokenize.js";
-import type { PaginateOptions } from "./types.js";
+import type { PaginateEvent, PaginateOptions } from "./types.js";
 
 const DEFAULTS = {
   maxTokens: 4000,
@@ -20,8 +20,9 @@ export function paginate(server: McpServer, options: PaginateOptions = {}): McpS
   const ttlMs = options.ttlMs ?? DEFAULTS.ttlMs;
   const tokenCounter = options.tokenCounter ?? defaultTokenCounter;
   const pageToolName = options.pageToolName ?? DEFAULTS.pageToolName;
+  const onPaginate = options.onPaginate;
 
-  const store = new ChunkStore(ttlMs, options.store);
+  const store = new ChunkStore(ttlMs, options.store, options.signingSecret);
 
   const originalTool = server.tool.bind(server);
 
@@ -34,6 +35,7 @@ export function paginate(server: McpServer, options: PaginateOptions = {}): McpS
     async ({ cursor }) => {
       const result = await store.get(cursor);
       if (!result) {
+        emit(onPaginate, { type: "cursor_expired" });
         return {
           content: [
             {
@@ -44,20 +46,16 @@ export function paginate(server: McpServer, options: PaginateOptions = {}): McpS
           isError: true,
         };
       }
-      const { chunk, nextCursor } = result;
+      const { chunk, nextCursor, pageIndex, totalPages } = result;
+      emit(onPaginate, { type: "page_fetched", pageIndex, totalPages, hasMore: nextCursor !== null });
       return buildPageResponse(chunk, nextCursor, pageToolName);
     }
   );
 
   // Override server.tool so every SUBSEQUENT registration gets a paginating handler.
-  // args signature variants (McpServer.tool overloads):
-  //   (name, cb)
-  //   (name, description, cb)
-  //   (name, paramsSchema, cb)
-  //   (name, description, paramsSchema, cb)
   (server as unknown as Record<string, unknown>).tool = new Proxy(originalTool, {
     apply(target, thisArg, args: unknown[]) {
-      const patched = patchArgs(args, store, maxTokens, tokenCounter, pageToolName);
+      const patched = patchArgs(args, store, maxTokens, tokenCounter, pageToolName, onPaginate);
       return Reflect.apply(target, thisArg, patched);
     },
   });
@@ -74,17 +72,20 @@ function patchArgs(
   store: ChunkStore,
   maxTokens: number,
   tokenCounter: (t: string) => number,
-  pageToolName: string
+  pageToolName: string,
+  onPaginate: ((e: PaginateEvent) => void) | undefined
 ): unknown[] {
   if (args.length === 0) return args;
 
+  // Tool name is always the first argument across all McpServer.tool() overloads.
+  const toolName = typeof args[0] === "string" ? args[0] : "unknown";
   const lastIdx = args.length - 1;
   const originalCb = args[lastIdx];
   if (typeof originalCb !== "function") return args;
 
   const patched = async (...cbArgs: unknown[]) => {
     const result = await (originalCb as (...a: unknown[]) => Promise<unknown>)(...cbArgs);
-    return maybePaginate(result, store, maxTokens, tokenCounter, pageToolName);
+    return maybePaginate(result, store, maxTokens, tokenCounter, pageToolName, toolName, onPaginate);
   };
 
   return [...args.slice(0, lastIdx), patched];
@@ -95,32 +96,28 @@ async function maybePaginate(
   store: ChunkStore,
   maxTokens: number,
   tokenCounter: (t: string) => number,
-  pageToolName: string
+  pageToolName: string,
+  toolName: string,
+  onPaginate: ((e: PaginateEvent) => void) | undefined
 ): Promise<unknown> {
   if (!isToolResult(result)) return result;
 
-  const tokens = estimateContentTokens(result.content, tokenCounter);
-  if (tokens <= maxTokens) return result;
+  const totalTokens = estimateContentTokens(result.content, tokenCounter);
+  if (totalTokens <= maxTokens) return result;
 
   const fullText = contentToText(result.content);
   const chunks = splitIntoChunks(fullText, maxTokens, tokenCounter);
   const id = await store.save(chunks);
-  const firstChunk = chunks[0] ?? "";
-  const nextCursor = chunks.length > 1
-    ? encodeCursor({ id, index: 1 })
-    : null;
 
+  emit(onPaginate, { type: "chunked", toolName, totalTokens, totalChunks: chunks.length });
+
+  const firstChunk = chunks[0] ?? "";
+  const nextCursor = chunks.length > 1 ? store.createCursor(id, 1) : null;
   return buildPageResponse(firstChunk, nextCursor, pageToolName);
 }
 
-function buildPageResponse(
-  chunk: string,
-  nextCursor: string | null,
-  pageToolName: string
-) {
-  const parts: Array<{ type: "text"; text: string }> = [
-    { type: "text", text: chunk },
-  ];
+function buildPageResponse(chunk: string, nextCursor: string | null, pageToolName: string) {
+  const parts: Array<{ type: "text"; text: string }> = [{ type: "text", text: chunk }];
   if (nextCursor) {
     parts.push({
       type: "text",
@@ -175,4 +172,15 @@ interface ToolResult {
 
 function isToolResult(value: unknown): value is ToolResult {
   return typeof value === "object" && value !== null && "content" in value;
+}
+
+function emit(
+  onPaginate: ((e: PaginateEvent) => void) | undefined,
+  event: PaginateEvent
+): void {
+  try {
+    onPaginate?.(event);
+  } catch {
+    // never let a logging callback crash the pagination pipeline
+  }
 }

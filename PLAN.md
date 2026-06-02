@@ -169,4 +169,55 @@ function paginate(server: McpServer, options?: PaginateOptions): McpServer;
 
 ---
 
+## Pending Action Items
+
+### ✅ Immediate — Done
+- Git author identity fixed: `Satish Kakollu <skakollu@yahoo.com>` set globally (2026-06-02)
+
+### 🔴 High Value — Drives adoption
+- **Community announcement** — post to r/mcp, MCP Discord, Hacker News (Show HN).
+  Package solves a real pain point and v0.2.2 is solid enough to announce.
+  Draft a post covering: what it does, one-line install, the "1 backend call" strength, Redis backend for prod.
+- **GitHub repo topics** — add topics to `github.com/SatishKakollu/mcp-paginate`:
+  `mcp`, `model-context-protocol`, `pagination`, `typescript`, `middleware`, `llm`
+  Makes the repo discoverable in GitHub searches.
+
+### 🟠 Python port — after TS API is stable
+- **Trigger:** no breaking API changes for 2–3 weeks after v0.2.2
+- **Package name:** `mcp-paginate` on PyPI
+- **Key differences from TS version:**
+  - Decorator-based tool registration (`@server.tool()`) instead of Proxy
+  - `tiktoken` available natively — chars/4 heuristic less necessary
+  - Backend interface via `abc.ABC` / `Protocol` instead of TypeScript interface
+  - Async via `asyncio` instead of Node event loop
+  - Redis backend via `redis-py` instead of `ioredis`
+- **Not a straight copy** — needs its own design pass for Pythonic API
+
+### 🟡 Multi-tenant / signed cursors — only if use cases emerge
+- Current cursors are base64url `{id, index}` — opaque, no user data, IDs are `crypto.randomUUID()` (unguessable)
+- **Gap:** no cryptographic integrity check — a client can craft a cursor pointing to an arbitrary `{id, index}`
+- If the store entry doesn't exist the request fails safely (no data leak), but there's no tamper-proof guarantee
+- **Fix when needed:** HMAC-sign the cursor using a server secret key:
+  ```ts
+  // cursor = base64url(payload) + "." + hmac(secret, payload)
+  // verify signature before looking up in store
+  ```
+- **When to build:** when a user reports a multi-tenant scenario where one tenant
+  could guess another tenant's cursor ID, or when the package is used in a
+  shared-infrastructure deployment
+
+### 🟡 MCP spec alignment (proposal #799) — wait for proposal to finalize
+- MCP proposal #799 defines a standard pagination block in tool responses
+- Once finalized, add as an opt-in alternative response format alongside the current cursor-hint approach
+- No action until the proposal ships in an official MCP SDK release
+
+---
+
+### 2026-06-02 — v0.2.1 published to npm + GitHub repo live
+- npm: https://www.npmjs.com/package/mcp-paginate
+- GitHub: https://github.com/skakollu/mcp-paginate
+- All pending publish/repo items resolved.
+
+---
+
 _This file is updated at each major milestone._

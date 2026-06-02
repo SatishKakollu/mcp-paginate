@@ -1,6 +1,6 @@
 {
   "name": "mcp-paginate",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Zero-config pagination middleware for MCP servers",
   "keywords": ["mcp", "model-context-protocol", "pagination", "middleware"],
   "license": "MIT",

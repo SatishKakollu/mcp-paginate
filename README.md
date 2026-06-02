@@ -83,6 +83,8 @@ npm install mcp-paginate
 | `options.tokenCounter` | `(text: string) => number` | `chars / 4` | Custom token counter |
 | `options.pageToolName` | `string` | `"get_next_page"` | Name of the injected pagination tool |
 | `options.store` | `StoreBackend` | `MemoryBackend` | Custom storage backend (e.g. Redis) |
+| `options.signingSecret` | `string` | — | HMAC-sign cursors with this secret (sha256) |
+| `options.onPaginate` | `(event: PaginateEvent) => void` | — | Lifecycle callback for logging / metrics |
 
 Returns the same `McpServer` instance (mutates in-place for composability).
 
@@ -328,6 +330,158 @@ npx tsx examples/demo-server.ts
 ```
 
 Connect any MCP client and call `list_records`, `list_files`, or `fetch_logs`. Each will paginate automatically when results exceed the token budget.
+
+---
+
+## LLM prompting guide
+
+mcp-paginate injects `get_next_page` as a real MCP tool, so well-prompted LLMs follow it automatically. In practice, models are inconsistent at multi-turn cursor following without explicit guidance. Use these templates.
+
+### System prompt (add once to your MCP server or host config)
+
+```
+When a tool response contains a pagination cursor, you MUST call get_next_page
+with that cursor before answering the user. Keep calling get_next_page until
+no cursor is returned. Never summarise or answer from partial results — always
+retrieve all pages first.
+```
+
+### Per-request prompt pattern
+
+When users want complete data, phrase the request explicitly:
+
+```
+Fetch all employee records using list_records(limit=500).
+Page through every result until there is no cursor remaining,
+then give me the complete count and a department breakdown.
+```
+
+### What the LLM sees across turns
+
+```
+Turn 1 — tool response (page 1 of 4):
+  [... first 1000 tokens of data ...]
+  ---
+  More results available. Call `get_next_page` with cursor: `eyJpZ...`
+
+Turn 2 — LLM calls get_next_page(cursor="eyJpZ...")
+  [... next 1000 tokens ...]
+  More results available. Call `get_next_page` with cursor: `eyJpZ...2`
+
+Turn 3 — LLM calls get_next_page(cursor="eyJpZ...2")
+  [... next 1000 tokens ...]
+  More results available. Call `get_next_page` with cursor: `eyJpZ...3`
+
+Turn 4 — LLM calls get_next_page(cursor="eyJpZ...3")
+  [... final tokens — no cursor]
+
+LLM now has all data and answers the user.
+```
+
+### Model-specific notes
+
+| Model | Behaviour | Tip |
+|-------|-----------|-----|
+| Claude (Sonnet / Opus) | Follows pagination reliably with the system prompt above | Works out of the box in most cases |
+| GPT-4o | Generally reliable but may stop early on long chains | Add "keep paginating until NO cursor is returned" explicitly |
+| Smaller / open models | May ignore the cursor entirely | Embed the instruction in every user message, not just the system prompt |
+
+---
+
+## Observability — `onPaginate` events
+
+The `onPaginate` callback fires on every pagination lifecycle event. Plug in any logger.
+
+```ts
+import pino from "pino";
+const log = pino();
+
+paginate(server, {
+  onPaginate: (event) => log.info(event),
+});
+```
+
+Three event types are emitted:
+
+### `chunked` — tool response was split into pages
+
+```ts
+{
+  type: "chunked",
+  toolName: "list_records",  // which tool triggered pagination
+  totalTokens: 18240,        // estimated size of the full response
+  totalChunks: 5,            // how many pages it was split into
+}
+```
+
+### `page_fetched` — a subsequent page was retrieved
+
+```ts
+{
+  type: "page_fetched",
+  pageIndex: 2,    // 0-based index of the page returned
+  totalPages: 5,   // total pages in this session
+  hasMore: true,   // false on the last page
+}
+```
+
+### `cursor_expired` — an invalid or expired cursor was used
+
+```ts
+{ type: "cursor_expired" }
+```
+
+### Full logging example
+
+```ts
+paginate(server, {
+  onPaginate: (event) => {
+    switch (event.type) {
+      case "chunked":
+        console.log(
+          `[mcp-paginate] ${event.toolName} → ${event.totalChunks} pages` +
+          ` (${event.totalTokens} tokens)`
+        );
+        break;
+      case "page_fetched":
+        console.log(
+          `[mcp-paginate] page ${event.pageIndex + 1}/${event.totalPages}` +
+          ` hasMore=${event.hasMore}`
+        );
+        break;
+      case "cursor_expired":
+        console.warn("[mcp-paginate] cursor_expired — client sent stale cursor");
+        break;
+    }
+  },
+});
+```
+
+> **Note:** if your `onPaginate` callback throws, the error is silently swallowed — it will never crash the pagination pipeline.
+
+---
+
+## Cursor signing (HMAC)
+
+By default cursors are unsigned opaque pointers. For multi-tenant or shared-infrastructure deployments where one tenant must not be able to probe another tenant's cursor IDs, enable HMAC signing:
+
+```ts
+paginate(server, {
+  signingSecret: process.env.CURSOR_SIGNING_SECRET, // any string, keep it secret
+});
+```
+
+**What changes:**
+- Every cursor is signed with `HMAC-sha256` using your secret
+- `get_next_page` verifies the signature before looking up the store; tampered cursors get `isError: true`
+- Comparison uses `crypto.timingSafeEqual` to prevent timing attacks
+
+**Signed cursor format:**
+```
+<base64url(payload)>.<base64url(HMAC-sha256(secret, payload))>
+```
+
+**Key rotation:** change `signingSecret` and all existing cursors are immediately invalidated (clients get a cursor-expired error and must re-call the original tool). Set TTL short enough that in-flight cursors expire naturally before you rotate.
 
 ---
 

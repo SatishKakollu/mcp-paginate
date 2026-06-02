@@ -9,7 +9,56 @@ export interface PaginateOptions {
   pageToolName?: string;
   /** Custom storage backend. Default: in-memory. Use RedisBackend for production. */
   store?: StoreBackend;
+  /**
+   * Secret key for HMAC-signing cursors (sha256).
+   * When set, cursors are signed and verified on every read.
+   * Recommended for multi-tenant or shared-infrastructure deployments.
+   */
+  signingSecret?: string;
+  /**
+   * Optional callback fired on every pagination lifecycle event.
+   * Use for structured logging, metrics, or debugging.
+   *
+   * @example
+   * paginate(server, {
+   *   onPaginate: (e) => logger.info(e),
+   * });
+   */
+  onPaginate?: (event: PaginateEvent) => void;
 }
+
+// ─── Pagination lifecycle events ─────────────────────────────────────────────
+
+/** Fired when a tool response is split into pages. */
+export interface ChunkedEvent {
+  type: "chunked";
+  /** Name of the tool whose response was paginated. */
+  toolName: string;
+  /** Estimated token count of the full response. */
+  totalTokens: number;
+  /** Number of chunks the response was split into. */
+  totalChunks: number;
+}
+
+/** Fired each time get_next_page is called successfully. */
+export interface PageFetchedEvent {
+  type: "page_fetched";
+  /** Zero-based index of the page returned. */
+  pageIndex: number;
+  /** Total number of pages in this session. */
+  totalPages: number;
+  /** True if there are more pages after this one. */
+  hasMore: boolean;
+}
+
+/** Fired when get_next_page is called with an expired or invalid cursor. */
+export interface CursorExpiredEvent {
+  type: "cursor_expired";
+}
+
+export type PaginateEvent = ChunkedEvent | PageFetchedEvent | CursorExpiredEvent;
+
+// ─── Storage ─────────────────────────────────────────────────────────────────
 
 export interface CursorPayload {
   id: string;
