@@ -1,6 +1,6 @@
 {
   "name": "mcp-pager",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Token-aware response paging for MCP servers — chunks large tool responses and delivers them page by page with agent-readable metadata",
   "keywords": ["mcp", "model-context-protocol", "pagination", "pager", "chunking", "token", "context-window", "middleware", "llm", "agent"],
   "license": "MIT",
@@ -18,6 +18,11 @@
       "types": "./dist/redis.d.ts",
       "import": "./dist/redis.js",
       "require": "./dist/redis.cjs"
+    },
+    "./tiktoken": {
+      "types": "./dist/tiktoken.d.ts",
+      "import": "./dist/tiktoken.js",
+      "require": "./dist/tiktoken.cjs"
     }
   },
   "files": ["dist"],
@@ -34,14 +39,19 @@
     "@modelcontextprotocol/sdk": "^1.12.1"
   },
   "peerDependencies": {
-    "ioredis": ">=5"
+    "ioredis": ">=5",
+    "@dqbd/tiktoken": ">=1"
   },
   "peerDependenciesMeta": {
     "ioredis": {
       "optional": true
+    },
+    "@dqbd/tiktoken": {
+      "optional": true
     }
   },
   "devDependencies": {
+    "@dqbd/tiktoken": "^1.0.21",
     "@types/node": "^25.9.1",
     "@vitest/coverage-v8": "^4.1.8",
     "tsup": "^8.5.0",

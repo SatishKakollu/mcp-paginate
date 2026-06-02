@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcp-pager"
+version = "0.5.0"
+description = "Token-aware response paging for MCP servers — chunks large tool responses and delivers them page by page with agent-readable metadata"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+keywords = ["mcp", "model-context-protocol", "pagination", "pager", "chunking", "token", "llm", "agent"]
+dependencies = [
+    "mcp>=1.0.0",
+]
+
+[project.optional-dependencies]
+tiktoken = ["tiktoken>=0.7"]
+redis = ["redis>=5.0"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "tiktoken>=0.7",
+    "redis>=5.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/SatishKakollu/mcp-pager"
+Repository = "https://github.com/SatishKakollu/mcp-pager"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mcp_pager*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

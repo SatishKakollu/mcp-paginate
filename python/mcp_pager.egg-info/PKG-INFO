@@ -1,0 +1,43 @@
+Metadata-Version: 2.4
+Name: mcp-pager
+Version: 0.5.0
+Summary: Token-aware response paging for MCP servers — chunks large tool responses and delivers them page by page with agent-readable metadata
+License: MIT
+Project-URL: Homepage, https://github.com/SatishKakollu/mcp-pager
+Project-URL: Repository, https://github.com/SatishKakollu/mcp-pager
+Keywords: mcp,model-context-protocol,pagination,pager,chunking,token,llm,agent
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: mcp>=1.0.0
+Provides-Extra: tiktoken
+Requires-Dist: tiktoken>=0.7; extra == "tiktoken"
+Provides-Extra: redis
+Requires-Dist: redis>=5.0; extra == "redis"
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.24; extra == "dev"
+Requires-Dist: tiktoken>=0.7; extra == "dev"
+Requires-Dist: redis>=5.0; extra == "dev"
+
+# mcp-pager (Python)
+
+Token-aware response paging for MCP servers. One line of code — large tool responses chunked and delivered page by page with agent-readable metadata.
+
+```bash
+pip install mcp-pager
+```
+
+```python
+from mcp.server.fastmcp import FastMCP
+from mcp_pager import paginate
+
+mcp = FastMCP("my-server")
+paginate(mcp, max_tokens=4000)
+
+@mcp.tool()
+async def list_records(limit: int = 500) -> str:
+    records = await db.fetch(limit=limit)  # could be huge
+    return json.dumps(records)
+```
+
+See [github.com/SatishKakollu/mcp-pager](https://github.com/SatishKakollu/mcp-pager) for full documentation.
