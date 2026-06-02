@@ -1,0 +1,14 @@
+import { defineConfig } from "tsup";
+
+export default defineConfig({
+  entry: {
+    index: "src/index.ts",
+    redis: "src/backends/redis.ts",
+  },
+  format: ["esm", "cjs"],
+  dts: true,
+  sourcemap: true,
+  clean: true,
+  splitting: false,
+  treeshake: true,
+});
