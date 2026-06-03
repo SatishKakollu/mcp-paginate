@@ -154,6 +154,79 @@ function splitIntoChunks(
   maxTokens: number,
   tokenCounter: (t: string) => number
 ): string[] {
+  return (
+    tryJsonArraySplit(text, maxTokens, tokenCounter) ??
+    tryLineSplit(text, maxTokens, tokenCounter) ??
+    charSplit(text, maxTokens, tokenCounter)
+  );
+}
+
+/** Split a JSON array at record boundaries so chunks are always valid JSON. */
+function tryJsonArraySplit(
+  text: string,
+  maxTokens: number,
+  counter: (t: string) => number
+): string[] | null {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) return null;
+
+  let items: unknown[];
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (!Array.isArray(parsed) || parsed.length <= 1) return null;
+    items = parsed;
+  } catch {
+    return null;
+  }
+
+  const chunks: string[] = [];
+  let batch: unknown[] = [];
+
+  for (const item of items) {
+    batch.push(item);
+    if (counter(JSON.stringify(batch)) > maxTokens && batch.length > 1) {
+      batch.pop();
+      chunks.push(JSON.stringify(batch, null, 2));
+      batch = [item];
+    }
+  }
+  if (batch.length > 0) chunks.push(JSON.stringify(batch, null, 2));
+
+  // Only use JSON splitting if we produced multiple chunks.
+  return chunks.length > 1 ? chunks : null;
+}
+
+/** Split at newline boundaries — good for logs, CSV, plain text. */
+function tryLineSplit(
+  text: string,
+  maxTokens: number,
+  counter: (t: string) => number
+): string[] | null {
+  if (!text.includes("\n")) return null;
+
+  const lines = text.split("\n");
+  const chunks: string[] = [];
+  let current: string[] = [];
+
+  for (const line of lines) {
+    current.push(line);
+    if (counter(current.join("\n")) > maxTokens && current.length > 1) {
+      current.pop();
+      chunks.push(current.join("\n"));
+      current = [line];
+    }
+  }
+  if (current.length > 0) chunks.push(current.join("\n"));
+
+  return chunks.length > 1 ? chunks : null;
+}
+
+/** Last-resort: binary-search character split. */
+function charSplit(
+  text: string,
+  maxTokens: number,
+  counter: (t: string) => number
+): string[] {
   const chunks: string[] = [];
   let start = 0;
   while (start < text.length) {
@@ -161,11 +234,8 @@ function splitIntoChunks(
     let hi = text.length - start;
     while (lo < hi) {
       const mid = Math.ceil((lo + hi) / 2);
-      if (tokenCounter(text.slice(start, start + mid)) <= maxTokens) {
-        lo = mid;
-      } else {
-        hi = mid - 1;
-      }
+      if (counter(text.slice(start, start + mid)) <= maxTokens) lo = mid;
+      else hi = mid - 1;
     }
     chunks.push(text.slice(start, start + lo));
     start += lo;

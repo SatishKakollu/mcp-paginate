@@ -41,7 +41,9 @@ async def test_small_response_unchanged():
         return msg
 
     result = await mcp._tool_manager.call_tool("echo", {"msg": "hello"})
-    assert result == "hello"
+    # Small responses are returned as list[TextContent] (consistent format).
+    assert isinstance(result, list)
+    assert result[0].text == "hello"
 
 
 @pytest.mark.asyncio
@@ -226,6 +228,94 @@ async def test_tampered_cursor_rejected():
     tampered = meta["nextCursor"][:-4] + "XXXX"
     result2 = await mcp._tool_manager.call_tool("get_next_page", {"cursor": tampered})
     assert "expired" in result2[0].text.lower() or "not found" in result2[0].text.lower()
+
+
+# ─── Custom pageToolName ──────────────────────────────────────────────────────
+
+# ─── Smart chunking ──────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_json_array_chunks_are_valid_json():
+    mcp = make_server()
+    paginate(mcp, max_tokens=100)
+
+    records = [{"id": i, "name": f"Employee {i}", "dept": "Engineering"} for i in range(50)]
+
+    @mcp.tool()
+    async def list_records() -> str:
+        return json.dumps(records, indent=2)
+
+    result = await mcp._tool_manager.call_tool("list_records", {})
+    pages = 0
+    while True:
+        chunk = result[0].text
+        parsed = json.loads(chunk)  # must not raise
+        assert isinstance(parsed, list)
+        pages += 1
+        meta = parse_meta(result)
+        if not meta["hasMore"]:
+            break
+        result = await mcp._tool_manager.call_tool(
+            "get_next_page", {"cursor": meta["nextCursor"]}
+        )
+        assert pages < 50, "Infinite loop"
+    assert pages > 1
+
+
+@pytest.mark.asyncio
+async def test_json_array_no_records_lost():
+    mcp = make_server()
+    paginate(mcp, max_tokens=100)
+
+    records = [{"id": i} for i in range(30)]
+
+    @mcp.tool()
+    async def list_records() -> str:
+        return json.dumps(records)
+
+    result = await mcp._tool_manager.call_tool("list_records", {})
+    all_ids = []
+    while True:
+        all_ids.extend(r["id"] for r in json.loads(result[0].text))
+        meta = parse_meta(result)
+        if not meta["hasMore"]:
+            break
+        result = await mcp._tool_manager.call_tool(
+            "get_next_page", {"cursor": meta["nextCursor"]}
+        )
+    assert sorted(all_ids) == [r["id"] for r in records]
+
+
+@pytest.mark.asyncio
+async def test_log_lines_split_at_boundaries():
+    mcp = make_server()
+    paginate(mcp, max_tokens=50)
+
+    logs = "\n".join(
+        f"2026-06-02T{i:06d}Z INFO service processed request {i}"
+        for i in range(100)
+    )
+
+    @mcp.tool()
+    async def fetch_logs() -> str:
+        return logs
+
+    result = await mcp._tool_manager.call_tool("fetch_logs", {})
+    parts = []
+    while True:
+        parts.append(result[0].text)
+        meta = parse_meta(result)
+        if not meta["hasMore"]:
+            break
+        result = await mcp._tool_manager.call_tool(
+            "get_next_page", {"cursor": meta["nextCursor"]}
+        )
+
+    # Every non-empty line in every chunk must exist verbatim in original
+    for part in parts:
+        for line in part.split("\n"):
+            if line.strip():
+                assert line in logs
 
 
 # ─── Custom pageToolName ──────────────────────────────────────────────────────

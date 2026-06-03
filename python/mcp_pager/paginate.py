@@ -1,4 +1,6 @@
 from __future__ import annotations
+import functools
+import inspect
 import json
 from typing import Any, Callable
 
@@ -12,7 +14,6 @@ from .types import (
     CursorExpiredEvent,
     PageFetchedEvent,
     PaginateEvent,
-    PaginateOptions,
     StoreBackend,
 )
 
@@ -46,7 +47,7 @@ def paginate(
     counter = token_counter or default_token_counter
     chunk_store = ChunkStore(ttl_ms, store, signing_secret)
 
-    # Register get_next_page BEFORE patching call_tool so it is never
+    # Register get_next_page BEFORE patching add_tool so it is never
     # re-paginated by the wrapper.
     @mcp.tool(name=page_tool_name, description="Retrieve the next page of a paginated tool response.")
     async def _get_next_page(cursor: str) -> list[TextContent]:
@@ -67,19 +68,42 @@ def paginate(
             page_tool_name, result["page_index"], result["total_pages"],
         )
 
-    # Patch ToolManager.call_tool AFTER registering get_next_page.
-    original_call_tool = mcp._tool_manager.call_tool
+    # Clear outputSchema on get_next_page itself (it returns list[TextContent]
+    # which FastMCP still wraps in structured output in 1.27+).
+    _clear_output_schema(mcp, page_tool_name)
 
-    async def _patched_call_tool(name: str, arguments: dict, context=None, convert_result: bool = False) -> Any:
-        result = await original_call_tool(name, arguments, context, convert_result)
-        if name == page_tool_name:
-            return result
-        return await _maybe_paginate(
-            result, chunk_store, max_tokens, counter,
-            page_tool_name, name, on_paginate,
-        )
+    # Patch add_tool so every SUBSEQUENT registration gets:
+    #   1. A paginating wrapper around the tool function
+    #   2. outputSchema cleared (avoids FastMCP structured output validation)
+    # add_tool signature: (fn, name=None, title=None, description=None, ...)
+    original_add_tool = mcp._tool_manager.add_tool
 
-    mcp._tool_manager.call_tool = _patched_call_tool  # type: ignore[method-assign]
+    def _patched_add_tool(
+        fn: Callable, name: str | None = None, **kwargs: Any
+    ) -> Any:
+        tool_name = name or fn.__name__
+        if tool_name == page_tool_name:
+            return original_add_tool(fn, name=name, **kwargs)
+
+        is_async = inspect.iscoroutinefunction(fn)
+
+        @functools.wraps(fn)
+        async def _wrapped(**call_kwargs: Any) -> list[TextContent]:
+            result = (await fn(**call_kwargs)) if is_async else fn(**call_kwargs)
+            return await _maybe_paginate(
+                result, chunk_store, max_tokens, counter,
+                page_tool_name, tool_name, on_paginate,
+            )
+
+        registered = original_add_tool(_wrapped, name=name, **kwargs)
+
+        # Clear structured outputSchema AFTER registration so the MCP client
+        # won't validate our list[TextContent] responses against it.
+        _clear_output_schema(mcp, tool_name)
+
+        return registered
+
+    mcp._tool_manager.add_tool = _patched_add_tool  # type: ignore[method-assign]
 
     return mcp
 
@@ -87,6 +111,14 @@ def paginate(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _clear_output_schema(mcp: FastMCP, tool_name: str) -> None:
+    """Suppress FastMCP's structured outputSchema for a tool."""
+    tool = mcp._tool_manager._tools.get(tool_name)
+    if tool and hasattr(tool, "fn_metadata") and tool.fn_metadata is not None:
+        tool.fn_metadata.output_schema = None
+        tool.fn_metadata.wrap_output = False
+
 
 async def _maybe_paginate(
     result: Any,
@@ -96,12 +128,13 @@ async def _maybe_paginate(
     page_tool_name: str,
     tool_name: str,
     on_paginate: Callable[[PaginateEvent], None] | None,
-) -> Any:
+) -> list[TextContent]:
     full_text = _content_to_text(result)
     total_tokens = counter(full_text)
 
     if total_tokens <= max_tokens:
-        return result
+        # Return as list[TextContent] — consistent with paginated responses.
+        return _to_content_list(result)
 
     chunks = _split_into_chunks(full_text, max_tokens, counter)
     id = await store.save(chunks)
@@ -146,6 +179,65 @@ def _build_page_response(
 
 
 def _split_into_chunks(text: str, max_tokens: int, counter: Callable[[str], int]) -> list[str]:
+    return (
+        _try_json_array_split(text, max_tokens, counter)
+        or _try_line_split(text, max_tokens, counter)
+        or _char_split(text, max_tokens, counter)
+    )
+
+
+def _try_json_array_split(text: str, max_tokens: int, counter: Callable[[str], int]) -> list[str]:
+    """Split a JSON array at record boundaries so every chunk is valid JSON."""
+    trimmed = text.strip()
+    if not (trimmed.startswith("[") and trimmed.endswith("]")):
+        return []
+    try:
+        items = json.loads(trimmed)
+        if not isinstance(items, list) or len(items) <= 1:
+            return []
+    except Exception:
+        return []
+
+    chunks: list[str] = []
+    batch: list = []
+
+    for item in items:
+        batch.append(item)
+        if counter(json.dumps(batch)) > max_tokens and len(batch) > 1:
+            batch.pop()
+            chunks.append(json.dumps(batch, indent=2))
+            batch = [item]
+
+    if batch:
+        chunks.append(json.dumps(batch, indent=2))
+
+    return chunks if len(chunks) > 1 else []
+
+
+def _try_line_split(text: str, max_tokens: int, counter: Callable[[str], int]) -> list[str]:
+    """Split at newline boundaries — good for logs, CSV, plain text."""
+    if "\n" not in text:
+        return []
+
+    lines = text.split("\n")
+    chunks: list[str] = []
+    current: list[str] = []
+
+    for line in lines:
+        current.append(line)
+        if counter("\n".join(current)) > max_tokens and len(current) > 1:
+            current.pop()
+            chunks.append("\n".join(current))
+            current = [line]
+
+    if current:
+        chunks.append("\n".join(current))
+
+    return chunks if len(chunks) > 1 else []
+
+
+def _char_split(text: str, max_tokens: int, counter: Callable[[str], int]) -> list[str]:
+    """Last-resort: binary-search character split."""
     chunks: list[str] = []
     start = 0
     while start < len(text):
@@ -177,6 +269,13 @@ def _content_to_text(result: Any) -> str:
     return json.dumps(result, default=str)
 
 
+def _to_content_list(result: Any) -> list[TextContent]:
+    """Convert any tool result to list[TextContent] for consistent response format."""
+    if isinstance(result, list) and result and hasattr(result[0], "type"):
+        return result  # already a content list
+    return [TextContent(type="text", text=_content_to_text(result))]
+
+
 def _emit(
     on_paginate: Callable[[PaginateEvent], None] | None,
     event: PaginateEvent,
@@ -186,4 +285,4 @@ def _emit(
     try:
         on_paginate(event)
     except Exception:
-        pass  # never crash the pagination pipeline
+        pass

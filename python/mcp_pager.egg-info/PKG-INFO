@@ -19,9 +19,11 @@ Requires-Dist: pytest-asyncio>=0.24; extra == "dev"
 Requires-Dist: tiktoken>=0.7; extra == "dev"
 Requires-Dist: redis>=5.0; extra == "dev"
 
-# mcp-pager (Python)
+[← Back to overview](../README.md)
 
-Token-aware response paging for MCP servers. One line of code — large tool responses chunked and delivered page by page with agent-readable metadata.
+# mcp-pager — Python
+
+Token-aware response management for [MCP](https://modelcontextprotocol.io) servers.
 
 ```bash
 pip install mcp-pager
@@ -40,4 +42,181 @@ async def list_records(limit: int = 500) -> str:
     return json.dumps(records)
 ```
 
-See [github.com/SatishKakollu/mcp-pager](https://github.com/SatishKakollu/mcp-pager) for full documentation.
+---
+
+## How it works
+
+Same as the TypeScript version — one call wraps every tool you register. Oversized responses are chunked and delivered page by page with agent-readable metadata:
+
+```json
+{
+  "hasMore": true,
+  "pageIndex": 0,
+  "totalPages": 12,
+  "remainingPages": 11,
+  "nextCursor": "eyJpZCI6Ijkx...",
+  "instruction": "Call `get_next_page` with nextCursor to get the next page. Repeat until hasMore is false."
+}
+```
+
+---
+
+## Installation
+
+```bash
+# Core only
+pip install mcp-pager
+
+# With exact tiktoken token counting (recommended)
+pip install "mcp-pager[tiktoken]"
+
+# With Redis backend
+pip install "mcp-pager[redis]"
+
+# Both
+pip install "mcp-pager[tiktoken,redis]"
+```
+
+**Requirements:** Python ≥ 3.10, `mcp` ≥ 1.0.0
+
+---
+
+## API
+
+### `paginate(mcp, **options)`
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `mcp` | `FastMCP` | — | The FastMCP server to wrap |
+| `max_tokens` | `int` | `4000` | Max tokens per page |
+| `ttl_ms` | `int` | `600000` | Cursor TTL in ms, sliding (10 min) |
+| `token_counter` | `Callable[[str], int]` | auto | Custom token counter |
+| `page_tool_name` | `str` | `"get_next_page"` | Name of the injected pagination tool |
+| `store` | `StoreBackend` | `MemoryBackend` | Custom storage backend |
+| `signing_secret` | `str` | `None` | HMAC-sign cursors (sha256) |
+| `on_paginate` | `Callable[[PaginateEvent], None]` | `None` | Lifecycle callback for logging |
+
+Returns the same `FastMCP` instance.
+
+---
+
+## Token counting
+
+By default, `mcp-pager` auto-detects [tiktoken](https://github.com/openai/tiktoken) and uses it for exact cl100k_base counts. If tiktoken is not installed it falls back to a content-aware heuristic (±10%).
+
+```bash
+pip install "mcp-pager[tiktoken]"  # enables exact counting automatically
+```
+
+Custom counter:
+
+```python
+import tiktoken
+enc = tiktoken.get_encoding("cl100k_base")
+paginate(mcp, token_counter=lambda text: len(enc.encode(text)))
+```
+
+---
+
+## Storage backends
+
+### Default: in-memory
+
+Works out of the box with sliding TTL. Not suitable for multi-process or serverless deployments.
+
+### Redis (production)
+
+```bash
+pip install "mcp-pager[redis]"
+```
+
+```python
+from redis.asyncio import Redis
+from mcp_pager.backends.redis import RedisBackend
+
+redis = Redis.from_url(os.environ["REDIS_URL"])
+paginate(mcp, store=RedisBackend(redis), ttl_ms=10 * 60 * 1000)
+```
+
+### Custom backend
+
+```python
+from mcp_pager import StoreBackend
+
+class DynamoBackend(StoreBackend):
+    async def get(self, id: str) -> list[str] | None: ...
+    async def set(self, id: str, chunks: list[str], ttl_ms: int) -> None: ...
+    async def delete(self, id: str) -> None: ...
+    async def refresh(self, id: str, ttl_ms: int) -> None: ...
+
+paginate(mcp, store=DynamoBackend())
+```
+
+---
+
+## Observability — `on_paginate`
+
+```python
+from mcp_pager import ChunkedEvent, PageFetchedEvent, CursorExpiredEvent
+
+def handle_event(event):
+    if event.type == "chunked":
+        print(f"{event.tool_name} → {event.total_chunks} pages ({event.total_tokens} tokens)")
+    elif event.type == "page_fetched":
+        print(f"page {event.page_index + 1}/{event.total_pages} hasMore={event.has_more}")
+    elif event.type == "cursor_expired":
+        print("cursor expired")
+
+paginate(mcp, on_paginate=handle_event)
+```
+
+---
+
+## Cursor signing (HMAC)
+
+```python
+import os
+paginate(mcp, signing_secret=os.environ["CURSOR_SECRET"])
+```
+
+Cursors are signed with HMAC-sha256. Tampered cursors are rejected before any store lookup.
+
+---
+
+## LLM prompting guide
+
+Add this to your system prompt so the LLM reliably follows pagination:
+
+```
+When a tool response contains a pagination cursor (hasMore: true), you MUST call
+get_next_page with that cursor before answering. Keep calling until hasMore is false.
+Never answer from partial results.
+```
+
+---
+
+## Demo server
+
+```bash
+python examples/demo_server.py
+```
+
+Tools: `list_records`, `list_files`, `fetch_logs`, `get_next_page`
+
+---
+
+## Development
+
+```bash
+git clone https://github.com/SatishKakollu/mcp-pager
+cd mcp-pager/python
+
+pip install -e ".[dev]"
+pytest tests/ -v
+```
+
+---
+
+## License
+
+MIT

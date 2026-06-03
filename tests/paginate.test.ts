@@ -189,6 +189,95 @@ describe("signingSecret", () => {
   });
 });
 
+// ─── Smart chunking ───────────────────────────────────────────────────────────
+
+describe("smart chunking", () => {
+  it("JSON array — each chunk is valid parseable JSON", async () => {
+    const server = makeServer();
+    paginate(server, { maxTokens: 100 });
+
+    const records = Array.from({ length: 50 }, (_, i) => ({
+      id: i + 1, name: `Employee ${i + 1}`, department: "Engineering",
+    }));
+
+    server.tool("list", {}, async () => ({
+      content: [{ type: "text" as const, text: JSON.stringify(records, null, 2) }],
+    }));
+
+    let result = await getHandler(server, "list")({});
+    let pages = 0;
+
+    while (true) {
+      const dataChunk = result.content[0].text;
+      // Every chunk must be valid JSON
+      expect(() => JSON.parse(dataChunk)).not.toThrow();
+      const parsed = JSON.parse(dataChunk) as unknown[];
+      expect(Array.isArray(parsed)).toBe(true);
+      pages++;
+
+      const meta = parseMetaBlock(result.content[result.content.length - 1].text);
+      if (!meta.hasMore) break;
+      result = await getHandler(server, "get_next_page")({ cursor: meta.nextCursor });
+      if (pages > 50) throw new Error("Infinite loop");
+    }
+    expect(pages).toBeGreaterThan(1);
+  });
+
+  it("JSON array — all records present across pages (no data lost)", async () => {
+    const server = makeServer();
+    paginate(server, { maxTokens: 100 });
+
+    const records = Array.from({ length: 30 }, (_, i) => ({ id: i + 1 }));
+
+    server.tool("list", {}, async () => ({
+      content: [{ type: "text" as const, text: JSON.stringify(records, null, 2) }],
+    }));
+
+    let result = await getHandler(server, "list")({});
+    const allIds: number[] = [];
+
+    while (true) {
+      const parsed = JSON.parse(result.content[0].text) as Array<{ id: number }>;
+      allIds.push(...parsed.map(r => r.id));
+      const meta = parseMetaBlock(result.content[result.content.length - 1].text);
+      if (!meta.hasMore) break;
+      result = await getHandler(server, "get_next_page")({ cursor: meta.nextCursor });
+    }
+
+    expect(allIds.sort((a, b) => a - b)).toEqual(records.map(r => r.id));
+  });
+
+  it("plain text logs — splits at line boundaries", async () => {
+    const server = makeServer();
+    paginate(server, { maxTokens: 50 });
+
+    const logs = Array.from({ length: 200 }, (_, i) =>
+      `2026-06-02T${String(i).padStart(6, "0")}Z INFO service processed request ${i}`
+    ).join("\n");
+
+    server.tool("logs", {}, async () => ({
+      content: [{ type: "text" as const, text: logs }],
+    }));
+
+    let result = await getHandler(server, "logs")({});
+    const parts: string[] = [];
+
+    while (true) {
+      parts.push(result.content[0].text);
+      const meta = parseMetaBlock(result.content[result.content.length - 1].text);
+      if (!meta.hasMore) break;
+      result = await getHandler(server, "get_next_page")({ cursor: meta.nextCursor });
+    }
+
+    // Every non-empty line in a chunk must exist verbatim in the original
+    for (const part of parts) {
+      for (const line of part.split("\n")) {
+        if (line.trim()) expect(logs).toContain(line);
+      }
+    }
+  });
+});
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 type ToolRegistry = Record<string, { handler: (args: Record<string, unknown>, extra?: unknown) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }> }>;
@@ -205,6 +294,7 @@ function getToolNames(server: McpServer): string[] {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return Object.keys((server as any)._registeredTools as ToolRegistry);
 }
+
 
 interface MetaBlock {
   hasMore: boolean;
