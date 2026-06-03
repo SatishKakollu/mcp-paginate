@@ -246,4 +246,15 @@ function paginate(server: McpServer, options?: PaginateOptions): McpServer;
 
 ---
 
+### 2026-06-03 — Option B detailed plan written
+- Created `ROADMAP.md` with full Option B design
+- Strategy pattern architecture: paginate / summarize / progressive / auto
+- Six features planned: Summarization, Progressive Disclosure, Structured Output,
+  Auto Strategy, Token Reporting, Streaming+Pagination
+- Trigger conditions defined: only start Option B after real users + stable core
+- Version plan: v0.6–v0.8 = Option A hardening → v1.0 stable API → v1.1+ Option B
+- See ROADMAP.md for full detail
+
+---
+
 _This file is updated at each major milestone._
