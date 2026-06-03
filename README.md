@@ -58,13 +58,22 @@ When a response is too large, the LLM receives structured metadata it can act on
 
 ---
 
+## Documentation
+
+| Doc | Description |
+|-----|-------------|
+| [TypeScript guide](docs/typescript.md) | Full API, backends, signing, observability |
+| [Python guide](python/README.md) | Full API, FastMCP integration, backends |
+| [Migration guide](docs/migration.md) | Moving from manual pagination to mcp-pager |
+| [Token savings](docs/token-savings.md) | Before/after numbers with real examples |
+| [Roadmap](ROADMAP.md) | What's coming in v1.x (Smart Response Handling) |
+
 ## Source
 
 ```
 mcp-pager/
 ├── src/              TypeScript source
-├── docs/
-│   └── typescript.md Full TypeScript documentation
+├── docs/             Guides and documentation
 ├── python/
 │   ├── mcp_pager/    Python source
 │   └── README.md     Full Python documentation
