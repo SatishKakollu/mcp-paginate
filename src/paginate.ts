@@ -102,7 +102,17 @@ async function maybePaginate(
 ): Promise<unknown> {
   if (!isToolResult(result)) return result;
 
-  const totalTokens = estimateContentTokens(result.content, tokenCounter);
+  let totalTokens: number;
+  try {
+    totalTokens = estimateContentTokens(result.content, tokenCounter);
+    // Guard against broken counters returning NaN / Infinity
+    if (!Number.isFinite(totalTokens) || totalTokens < 0) {
+      totalTokens = estimateContentTokens(result.content, defaultTokenCounter);
+    }
+  } catch {
+    // Custom counter crashed — fall back to default
+    totalTokens = estimateContentTokens(result.content, defaultTokenCounter);
+  }
   if (totalTokens <= maxTokens) return result;
 
   const fullText = contentToText(result.content);

@@ -130,7 +130,13 @@ async def _maybe_paginate(
     on_paginate: Callable[[PaginateEvent], None] | None,
 ) -> list[TextContent]:
     full_text = _content_to_text(result)
-    total_tokens = counter(full_text)
+    try:
+        total_tokens = counter(full_text)
+        # Guard against broken counters returning NaN / Infinity / negative
+        if not isinstance(total_tokens, (int, float)) or not (0 <= total_tokens < float("inf")):
+            total_tokens = default_token_counter(full_text)
+    except Exception:
+        total_tokens = default_token_counter(full_text)
 
     if total_tokens <= max_tokens:
         # Return as list[TextContent] — consistent with paginated responses.
