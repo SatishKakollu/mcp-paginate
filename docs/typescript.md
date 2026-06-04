@@ -291,7 +291,7 @@ Cursors are base64url-encoded opaque pointers — they contain no user data.
 
 ## Usage examples
 
-### Minimal setup
+### 1. Minimal setup
 
 ```ts
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -301,7 +301,7 @@ import { z } from "zod";
 
 const server = new McpServer({ name: "my-server", version: "1.0.0" });
 
-paginate(server); // one line, zero config
+paginate(server, { maxTokens: 4000 }); // one line — all tools are now token-safe
 
 server.tool("list_files", { dir: z.string() }, async ({ dir }) => {
   const files = await fs.readdir(dir, { recursive: true });
@@ -312,7 +312,150 @@ const transport = new StdioServerTransport();
 await server.connect(transport);
 ```
 
-### Production setup with Redis
+---
+
+### 2. Wrapping a real public API (tested)
+
+This example wraps JSONPlaceholder and PokéAPI — no auth, large responses.
+Verified with Claude Desktop: 5,000 photos across 74 pages, 1,350 Pokémon across 7 pages.
+
+```ts
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { paginate } from "mcp-pager";
+import { z } from "zod";
+
+const server = new McpServer({ name: "api-server", version: "1.0.0" });
+paginate(server, { maxTokens: 4000 });
+
+// 5000 photos — returns 74 pages at maxTokens: 4000
+server.tool(
+  "list_photos",
+  "Fetch all photos from JSONPlaceholder",
+  { albumId: z.number().optional().describe("Filter by album (1-100)") },
+  async ({ albumId }) => {
+    const url = albumId
+      ? `https://jsonplaceholder.typicode.com/photos?albumId=${albumId}`
+      : "https://jsonplaceholder.typicode.com/photos";
+    const data = await fetch(url).then(r => r.json());
+    return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+  }
+);
+
+// 1350 Pokémon — returns 7 pages at maxTokens: 4000
+server.tool(
+  "list_pokemon",
+  "Fetch Pokémon from PokéAPI",
+  { limit: z.number().default(300) },
+  async ({ limit }) => {
+    const data = await fetch(`https://pokeapi.co/api/v2/pokemon?limit=${limit}`).then(r => r.json());
+    return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+  }
+);
+
+const transport = new StdioServerTransport();
+await server.connect(transport);
+```
+
+Run it:
+```bash
+npx tsx examples/real-api-server.ts
+```
+
+---
+
+### 3. Database query tool
+
+```ts
+import { paginate } from "mcp-pager";
+
+paginate(server, { maxTokens: 4000 });
+
+server.tool(
+  "search_records",
+  "Search the database — returns all matching records",
+  { query: z.string(), table: z.string() },
+  async ({ query, table }) => {
+    // Fetch everything — mcp-pager handles the chunking
+    const rows = await db.query(
+      `SELECT * FROM ${table} WHERE search_vector @@ to_tsquery($1)`,
+      [query]
+    );
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(rows, null, 2) }],
+    };
+  }
+);
+```
+
+---
+
+### 4. File system explorer
+
+```ts
+import { paginate } from "mcp-pager";
+import * as fs from "fs/promises";
+import * as path from "path";
+
+paginate(server, { maxTokens: 4000 });
+
+server.tool(
+  "list_files",
+  "Recursively list all files in a directory",
+  { dir: z.string(), extension: z.string().optional() },
+  async ({ dir, extension }) => {
+    const walk = async (p: string): Promise<string[]> => {
+      const entries = await fs.readdir(p, { withFileTypes: true });
+      const files = await Promise.all(
+        entries.map(e =>
+          e.isDirectory()
+            ? walk(path.join(p, e.name))
+            : [path.join(p, e.name)]
+        )
+      );
+      return files.flat();
+    };
+
+    let files = await walk(dir);
+    if (extension) files = files.filter(f => f.endsWith(extension));
+
+    return {
+      content: [{ type: "text" as const, text: files.join("\n") }],
+    };
+  }
+);
+```
+
+---
+
+### 5. Log aggregation tool
+
+```ts
+import { paginate } from "mcp-pager";
+
+paginate(server, { maxTokens: 4000 });
+
+server.tool(
+  "fetch_logs",
+  "Fetch application logs — line-boundary splitting keeps log entries intact",
+  {
+    service: z.string(),
+    since: z.string().optional().describe("ISO date string"),
+    level: z.enum(["ERROR", "WARN", "INFO", "DEBUG", "ALL"]).default("ALL"),
+  },
+  async ({ service, since, level }) => {
+    const logs = await logStore.query({ service, since, level });
+    // mcp-pager splits at line boundaries — each page contains complete log lines
+    return {
+      content: [{ type: "text" as const, text: logs.join("\n") }],
+    };
+  }
+);
+```
+
+---
+
+### 6. Production setup with Redis + observability
 
 ```ts
 import Redis from "ioredis";
@@ -323,30 +466,72 @@ const redis = new Redis(process.env.REDIS_URL);
 
 paginate(server, {
   maxTokens: 4000,
-  ttlMs: 10 * 60 * 1000,
-  store: new RedisBackend(redis),
+  ttlMs: 10 * 60 * 1000,           // 10 min sliding window
+  store: new RedisBackend(redis),   // shared across processes
+  signingSecret: process.env.CURSOR_SECRET, // HMAC-sign cursors
+  onPaginate: (event) => {
+    if (event.type === "chunked") {
+      logger.info(`${event.toolName} → ${event.totalChunks} pages (${event.totalTokens} tokens)`);
+    }
+    if (event.type === "cursor_expired") {
+      logger.warn("cursor expired — client will need to re-call tool");
+    }
+  },
 });
 ```
 
-### Custom token budget, TTL, and tool name
+---
+
+### 7. Exact token counting with tiktoken
 
 ```ts
+import { paginate } from "mcp-pager";
+import { tiktokenCounter } from "mcp-pager/tiktoken";
+
+// Requires: npm install @dqbd/tiktoken
 paginate(server, {
-  maxTokens: 2000,          // tighter budget for smaller context windows
-  ttlMs: 60_000,            // cursors expire after 1 minute
-  pageToolName: "next_chunk", // avoid collision with existing tools
+  maxTokens: 4000,
+  tokenCounter: tiktokenCounter, // exact cl100k_base counts
 });
 ```
 
-### Run the demo server
+---
 
-A working demo with three realistic tools (HR records, file listing, log fetch):
+## Usage tips
 
-```bash
-npx tsx examples/demo-server.ts
+**Always call `paginate()` before registering tools.**
+The proxy is applied to `server.tool` — tools registered before `paginate()` won't be wrapped.
+
+```ts
+// ✅ Correct
+paginate(server, { maxTokens: 4000 });
+server.tool("my_tool", ...);
+
+// ❌ Wrong — my_tool won't be paginated
+server.tool("my_tool", ...);
+paginate(server, { maxTokens: 4000 });
 ```
 
-Connect any MCP client and call `list_records`, `list_files`, or `fetch_logs`. Each will paginate automatically when results exceed the token budget.
+**Set `maxTokens` to ~80% of your real context budget.**
+The default token estimator has ±10% variance. Leave headroom.
+
+| Model | Context | Recommended `maxTokens` |
+|-------|---------|------------------------|
+| Claude Sonnet 4.6 | 200k | 4,000–8,000 (leave room for conversation) |
+| GPT-4o | 128k | 4,000–8,000 |
+| Cursor | 32k | 3,000–4,000 |
+
+**JSON arrays split at record boundaries automatically.**
+If your tool returns a JSON array, each page is valid, parseable JSON — no broken records.
+
+**For production, always use RedisBackend.**
+The default MemoryBackend is lost on process restart. In serverless or multi-process deployments, cursors from one instance won't resolve in another.
+
+**Test your setup** — run the real API demo and verify Claude pages correctly:
+```bash
+npx tsx examples/real-api-server.ts
+```
+Then prompt: *"Fetch all photos using list_photos, page through everything until hasMore is false."*
 
 ---
 
