@@ -181,6 +181,7 @@ def _build_page_response(
 def _split_into_chunks(text: str, max_tokens: int, counter: Callable[[str], int]) -> list[str]:
     return (
         _try_json_array_split(text, max_tokens, counter)
+        or _try_nested_array_split(text, max_tokens, counter)
         or _try_line_split(text, max_tokens, counter)
         or _char_split(text, max_tokens, counter)
     )
@@ -210,6 +211,55 @@ def _try_json_array_split(text: str, max_tokens: int, counter: Callable[[str], i
 
     if batch:
         chunks.append(json.dumps(batch, indent=2))
+
+    return chunks if len(chunks) > 1 else []
+
+
+def _try_nested_array_split(text: str, max_tokens: int, counter: Callable[[str], int]) -> list[str]:
+    """
+    Handle wrapped objects like {"moves": [...], "results": [...]}.
+    Finds the largest array field, splits it, reconstructs the wrapper per chunk.
+    Fixes the deeply-nested object edge case (e.g. Pokémon full detail).
+    """
+    trimmed = text.strip()
+    if not (trimmed.startswith("{") and trimmed.endswith("}")):
+        return []
+    try:
+        obj = json.loads(trimmed)
+        if not isinstance(obj, dict):
+            return []
+    except Exception:
+        return []
+
+    # Find the largest array field
+    best_key = max(
+        (k for k, v in obj.items() if isinstance(v, list)),
+        key=lambda k: len(obj[k]),
+        default=None
+    )
+    if not best_key or len(obj[best_key]) <= 1:
+        return []
+
+    items = obj[best_key]
+    wrapper = {k: ([] if k == best_key else v) for k, v in obj.items()}
+
+    wrapper_tokens = counter(json.dumps(wrapper))
+    if wrapper_tokens >= max_tokens:
+        return []
+
+    chunks: list[str] = []
+    batch: list = []
+
+    for item in items:
+        batch.append(item)
+        candidate = {**wrapper, best_key: batch}
+        if counter(json.dumps(candidate)) > max_tokens and len(batch) > 1:
+            batch.pop()
+            chunks.append(json.dumps({**wrapper, best_key: batch}, indent=2))
+            batch = [item]
+
+    if batch:
+        chunks.append(json.dumps({**wrapper, best_key: batch}, indent=2))
 
     return chunks if len(chunks) > 1 else []
 

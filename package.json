@@ -1,6 +1,6 @@
 {
   "name": "mcp-pager",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Token-aware response paging for MCP servers — chunks large tool responses and delivers them page by page with agent-readable metadata",
   "keywords": ["mcp", "model-context-protocol", "pagination", "pager", "chunking", "token", "context-window", "middleware", "llm", "agent"],
   "license": "MIT",

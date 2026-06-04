@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mcp-pager"
-version = "0.6.0"
+version = "0.7.0"
 description = "Token-aware response paging for MCP servers — chunks large tool responses and delivers them page by page with agent-readable metadata"
 readme = "README.md"
 license = "MIT"

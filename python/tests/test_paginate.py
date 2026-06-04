@@ -287,6 +287,44 @@ async def test_json_array_no_records_lost():
 
 
 @pytest.mark.asyncio
+async def test_nested_object_splits_largest_array_preserves_wrapper():
+    mcp = make_server()
+    paginate(mcp, max_tokens=100)
+
+    payload = {
+        "id": 6,
+        "name": "charizard",
+        "weight": 905,
+        "moves": [
+            {"move": {"name": f"move-{i}"}, "version_group_details": [{"level": i}]}
+            for i in range(50)
+        ],
+        "abilities": [{"ability": {"name": "blaze"}}],
+    }
+
+    @mcp.tool()
+    async def get_pokemon() -> str:
+        return json.dumps(payload)
+
+    result = await mcp._tool_manager.call_tool("get_pokemon", {})
+    pages = 0
+    while True:
+        parsed = json.loads(result[0].text)
+        assert parsed["name"] == "charizard"   # wrapper preserved
+        assert parsed["weight"] == 905         # wrapper preserved
+        assert isinstance(parsed["moves"], list)
+        pages += 1
+        meta = parse_meta(result)
+        if not meta["hasMore"]:
+            break
+        result = await mcp._tool_manager.call_tool(
+            "get_next_page", {"cursor": meta["nextCursor"]}
+        )
+        assert pages < 50, "Infinite loop"
+    assert pages > 1
+
+
+@pytest.mark.asyncio
 async def test_log_lines_split_at_boundaries():
     mcp = make_server()
     paginate(mcp, max_tokens=50)

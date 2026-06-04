@@ -156,6 +156,7 @@ function splitIntoChunks(
 ): string[] {
   return (
     tryJsonArraySplit(text, maxTokens, tokenCounter) ??
+    tryNestedArraySplit(text, maxTokens, tokenCounter) ??
     tryLineSplit(text, maxTokens, tokenCounter) ??
     charSplit(text, maxTokens, tokenCounter)
   );
@@ -193,6 +194,67 @@ function tryJsonArraySplit(
   if (batch.length > 0) chunks.push(JSON.stringify(batch, null, 2));
 
   // Only use JSON splitting if we produced multiple chunks.
+  return chunks.length > 1 ? chunks : null;
+}
+
+/**
+ * Handle wrapped JSON objects like { "results": [...], "moves": [...] }.
+ * Finds the largest array field, splits it, and reconstructs the wrapper.
+ * Fixes edge case: deeply nested objects (e.g. Pokémon full detail) where
+ * the top-level is an object, not a bare array.
+ */
+function tryNestedArraySplit(
+  text: string,
+  maxTokens: number,
+  counter: (t: string) => number
+): string[] | null {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return null;
+
+  let obj: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+    obj = parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+
+  // Find the largest array field to split on
+  let bestKey: string | null = null;
+  let bestLen = 0;
+  for (const [key, val] of Object.entries(obj)) {
+    if (Array.isArray(val) && val.length > bestLen) {
+      bestKey = key;
+      bestLen = val.length;
+    }
+  }
+
+  if (!bestKey || bestLen <= 1) return null;
+
+  const items = obj[bestKey] as unknown[];
+  const wrapper = { ...obj, [bestKey]: [] as unknown[] };
+
+  // Binary-search how many items fit per chunk with the wrapper overhead
+  const wrapperTokens = counter(JSON.stringify(wrapper));
+  if (wrapperTokens >= maxTokens) return null; // wrapper alone exceeds budget
+
+  const chunks: string[] = [];
+  let batch: unknown[] = [];
+
+  for (const item of items) {
+    batch.push(item);
+    const candidate = { ...wrapper, [bestKey]: batch };
+    if (counter(JSON.stringify(candidate)) > maxTokens && batch.length > 1) {
+      batch.pop();
+      chunks.push(JSON.stringify({ ...wrapper, [bestKey]: batch }, null, 2));
+      batch = [item];
+    }
+  }
+  if (batch.length > 0) {
+    chunks.push(JSON.stringify({ ...wrapper, [bestKey]: batch }, null, 2));
+  }
+
   return chunks.length > 1 ? chunks : null;
 }
 

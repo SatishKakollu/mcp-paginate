@@ -247,6 +247,45 @@ describe("smart chunking", () => {
     expect(allIds.sort((a, b) => a - b)).toEqual(records.map(r => r.id));
   });
 
+  it("wrapped JSON object — splits largest array field, preserves wrapper", async () => {
+    const server = makeServer();
+    paginate(server, { maxTokens: 100 });
+
+    // Pokémon-style: single object with a large nested array
+    const payload = {
+      id: 6,
+      name: "charizard",
+      weight: 905,
+      moves: Array.from({ length: 50 }, (_, i) => ({
+        move: { name: `move-${i}`, url: `https://pokeapi.co/api/v2/move/${i}/` },
+        version_group_details: [{ level_learned_at: i, move_learn_method: { name: "level-up" } }],
+      })),
+      abilities: [{ ability: { name: "blaze" }, is_hidden: false }],
+    };
+
+    server.tool("pokemon", {}, async () => ({
+      content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }],
+    }));
+
+    let result = await getHandler(server, "pokemon")({});
+    let pages = 0;
+
+    while (true) {
+      const chunk = result.content[0].text;
+      // Every chunk must be valid JSON with the wrapper preserved
+      const parsed = JSON.parse(chunk) as Record<string, unknown>;
+      expect(parsed.name).toBe("charizard");       // wrapper preserved
+      expect(parsed.weight).toBe(905);             // wrapper preserved
+      expect(Array.isArray(parsed.moves)).toBe(true); // moves array present
+      pages++;
+      const meta = parseMetaBlock(result.content[result.content.length - 1].text);
+      if (!meta.hasMore) break;
+      result = await getHandler(server, "get_next_page")({ cursor: meta.nextCursor });
+      if (pages > 50) throw new Error("Infinite loop");
+    }
+    expect(pages).toBeGreaterThan(1);
+  });
+
   it("plain text logs — splits at line boundaries", async () => {
     const server = makeServer();
     paginate(server, { maxTokens: 50 });

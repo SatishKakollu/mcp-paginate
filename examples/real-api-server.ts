@@ -152,10 +152,158 @@ server.tool(
   }
 );
 
+// ─── Edge case 1: Nested arrays ──────────────────────────────────────────────
+// Each post embeds its own comments array — deeply nested structure.
+// Tests whether smart chunking handles records containing sub-arrays.
+
+server.tool(
+  "list_posts_with_comments",
+  "Fetch all posts with their comments embedded — nested array per record (edge case)",
+  {},
+  async () => {
+    const [posts, comments] = await Promise.all([
+      fetch("https://jsonplaceholder.typicode.com/posts").then(r => r.json()) as Promise<Array<{ id: number; [k: string]: unknown }>>,
+      fetch("https://jsonplaceholder.typicode.com/comments").then(r => r.json()) as Promise<Array<{ postId: number; [k: string]: unknown }>>,
+    ]);
+
+    // Embed comments into each post — creates deeply nested records
+    const enriched = posts.map(post => ({
+      ...post,
+      comments: comments.filter(c => c.postId === post.id),
+    }));
+
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(enriched, null, 2) }],
+    };
+  }
+);
+
+// ─── Edge case 2: Single massive object (not an array) ───────────────────────
+// Returns ONE Pokémon with 500+ moves, 10+ abilities, full sprite set.
+// Tests the char-split fallback when content is a single large object.
+// Charizard has ~500 moves — the full detail is ~80,000 tokens.
+
+server.tool(
+  "get_pokemon_full_detail",
+  "Get COMPLETE detail for a Pokémon — all moves, abilities, sprites, stats (single large object edge case)",
+  {
+    name: z.string().default("charizard")
+      .describe("Pokémon name. Try 'charizard', 'mewtwo', 'pikachu'"),
+  },
+  async ({ name }) => {
+    const [pokemon, species] = await Promise.all([
+      fetch(`https://pokeapi.co/api/v2/pokemon/${name.toLowerCase()}`).then(r => {
+        if (!r.ok) throw new Error(`Not found: ${name}`);
+        return r.json();
+      }),
+      fetch(`https://pokeapi.co/api/v2/pokemon-species/${name.toLowerCase()}`).then(r =>
+        r.ok ? r.json() : null
+      ),
+    ]);
+
+    // Merge everything — produces a very large single object
+    const full = { ...pokemon, species };
+
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(full, null, 2) }],
+    };
+  }
+);
+
+// ─── Edge case 3: Wrapped JSON object (not a bare array) ─────────────────────
+// Returns { total, page, results: [...] } — the array is NOT at the top level.
+// Tests that tryJsonArraySplit handles wrapper objects by falling through
+// to line-split or char-split.
+
+server.tool(
+  "search_users",
+  "Search JSONPlaceholder users — returns wrapped object { total, results } (not a bare array)",
+  {},
+  async () => {
+    const users = await fetch("https://jsonplaceholder.typicode.com/users").then(r => r.json()) as unknown[];
+
+    // Wrap in an object — this is NOT a bare JSON array
+    const wrapped = {
+      total: users.length,
+      page: 1,
+      results: users,
+      metadata: {
+        source: "jsonplaceholder.typicode.com",
+        fetched_at: new Date().toISOString(),
+      },
+    };
+
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(wrapped, null, 2) }],
+    };
+  }
+);
+
+// ─── Edge case 4: Mixed text + structured data ────────────────────────────────
+// Returns a markdown report with embedded JSON blocks.
+// Tests line-split on content that is neither pure JSON nor pure plain text.
+
+server.tool(
+  "get_api_report",
+  "Generate a report mixing markdown text and JSON data (mixed content edge case)",
+  {},
+  async () => {
+    const [posts, users] = await Promise.all([
+      fetch("https://jsonplaceholder.typicode.com/posts").then(r => r.json()) as Promise<unknown[]>,
+      fetch("https://jsonplaceholder.typicode.com/users").then(r => r.json()) as Promise<unknown[]>,
+    ]);
+
+    // Mix markdown + JSON — tests line-boundary splitting on mixed content
+    const report = [
+      "# JSONPlaceholder API Report",
+      `Generated: ${new Date().toISOString()}`,
+      "",
+      "## Summary",
+      `- Total posts: ${(posts as unknown[]).length}`,
+      `- Total users: ${(users as unknown[]).length}`,
+      "",
+      "## Users",
+      "```json",
+      JSON.stringify(users, null, 2),
+      "```",
+      "",
+      "## Posts (first 10)",
+      "```json",
+      JSON.stringify((posts as unknown[]).slice(0, 10), null, 2),
+      "```",
+      "",
+      "## All Posts",
+      ...((posts as unknown[]).map((p: unknown) =>
+        `- Post ${(p as { id: number }).id}: ${(p as { title: string }).title}`
+      )),
+    ].join("\n");
+
+    return {
+      content: [{ type: "text" as const, text: report }],
+    };
+  }
+);
+
+// ─── Edge case 5: Empty response ─────────────────────────────────────────────
+// Returns an empty array — should pass through without triggering pagination.
+
+server.tool(
+  "list_empty",
+  "Returns an empty array — tests that mcp-pager passes through small/empty responses unchanged",
+  {},
+  async () => {
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify([], null, 2) }],
+    };
+  }
+);
+
 // ─── Connect ─────────────────────────────────────────────────────────────────
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
-console.error(
-  "[real-api-server] Running. Tools: list_photos | list_comments | list_todos | list_pokemon | get_pokemon_detail"
-);
+console.error([
+  "[real-api-server] Running.",
+  "Standard: list_photos | list_comments | list_todos | list_pokemon | get_pokemon_detail",
+  "Edge cases: list_posts_with_comments | get_pokemon_full_detail | search_users | get_api_report | list_empty",
+].join("\n"));
